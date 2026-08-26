@@ -136,7 +136,7 @@ cd Phase0-MicroDrone
 
 Scan the QR code below to open this repository instantly:
 
-![GitHub QR Code](assets/qr/your-qrcode-file.png)
+![QR Code ContextualAI Systems.png](assets/qr/your-qrcode-file.png)
 
 
 ### 2. Install dependencies
