@@ -200,6 +200,8 @@ Field testing, refinement, demo preparation
 - **Student Engineering Packet (PDF)**  
 - **Slides (RCOS Pitch Deck)**  
 - **Slack/Discord (QR code)**  
+### Recruitment Handout (PDF)
+[2026 RPI Recruitment Handout](docs/2026%20RPI%20Recruitment%20Handoutv6.pdf)
 
 ---
 
