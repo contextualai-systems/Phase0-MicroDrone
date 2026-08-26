@@ -214,8 +214,9 @@ Email: contextualaisystems@yourdomain.com
 
 ---
 
-## QR Code Placeholder  
-(Insert QR code linking to Slack/Discord + GitHub repo)
+## QR Code   
+QR Code ContextualAI Systems.png
+
 
 ---
 
