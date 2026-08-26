@@ -132,7 +132,12 @@ This project is fully student‑built under RCOS.
 ```
 git clone https://github.com/ContextualAI-Systems/Phase0-MicroDrone.git
 cd Phase0-MicroDrone
-```
+## Quick Access (QR Code)
+
+Scan the QR code below to open this repository instantly:
+
+![GitHub QR Code](assets/qr/your-qrcode-file.png)
+
 
 ### 2. Install dependencies
 (Requirements file or Docker container will be provided.)
