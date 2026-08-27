@@ -75,7 +75,7 @@ This project is fully student‑built under RCOS.
 ```
 ---
 
-## ⭐ **START HERE — Phase‑0 MicroDrone Onboarding**
+## **START HERE — Phase‑0 MicroDrone Onboarding**
 
 Welcome to **CONTEXTUAL·AI™ SYSTEMS — Phase‑0 MicroDrone**.  
 This section gives you everything you need to get set up, run the project, and begin contributing.
