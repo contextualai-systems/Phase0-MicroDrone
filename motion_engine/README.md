@@ -14,4 +14,27 @@ bounded motion primitives.
 ```bash
 python motion_engine/run_motion.py
 
+File Structure
+run_motion.py — main entry point
 
+primitives/ — rise, tilt, rotate, hover
+
+controllers/ — PID or rule‑based control
+
+utils/ — math helpers, smoothing
+
+Good First Issues
+Add a new motion primitive
+
+Improve rotation stability
+
+Add smoothing to tilt behavior
+
+Add logging for motion commands
+
+Contributing
+Keep primitives modular
+
+Add diagrams for new behaviors
+
+Test in simulation before merging
