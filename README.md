@@ -73,6 +73,149 @@ This project is fully student‑built under RCOS.
 |   - Charging Contacts   |
 +-------------------------+
 ```
+---
+
+## ⭐ **START HERE — Phase‑0 MicroDrone Onboarding**
+
+Welcome to **CONTEXTUAL·AI™ SYSTEMS — Phase‑0 MicroDrone**.  
+This section gives you everything you need to get set up, run the project, and begin contributing.
+
+---
+
+### **1. Install Required Tools**
+
+Before cloning the repo, install the following:
+
+- **Python 3.10+**  
+- **pip** (Python package manager)  
+- **Git**  
+- **VS Code** (recommended)  
+- **Webots R2024b** (simulation environment)  
+- **OpenCV** (installed automatically via requirements)
+
+---
+
+### **2. Clone the Repository**
+
+```bash
+git clone https://github.com/ContextualAI-Systems/Phase0-MicroDrone.git
+cd Phase0-MicroDrone
+```
+
+If you prefer quick access, scan the QR code in the section above.
+
+---
+
+### **3. Install Dependencies**
+
+```bash
+pip install -r requirements.txt
+```
+
+This installs:
+
+- OpenCV  
+- NumPy  
+- PyTorch (CPU version)  
+- Webots Python API  
+- Utility libraries used across modules  
+
+---
+
+### **4. Project Structure Overview**
+
+This repository is organized into the core Phase‑0 modules:
+
+```
+/cv                     # Computer vision pipeline (object detection, tracking)
+/motion_engine          # Drone motion primitives and control logic
+/safety_layer           # Collision avoidance, failsafes, boundary enforcement
+/docking                # Autonomous docking + charging logic
+/simulation             # Webots simulation environment and drone model
+/docs                   # Project documentation, handouts, and onboarding guides
+/assets                 # QR codes, diagrams, and branding assets
+```
+
+Each module contains its own README with instructions and starter tasks.
+
+---
+
+### **5. Run the Simulation (Webots)**
+
+1. Install **Webots R2024b**  
+2. Open the simulation world:
+
+```
+simulation/worlds/microdrone_world.wbt
+```
+
+3. Press **Play**  
+4. The drone will spawn with default Phase‑0 behaviors
+
+---
+
+### **6. Run the CV Pipeline**
+
+From the project root:
+
+```bash
+python cv/run_cv.py
+```
+
+This launches:
+
+- camera input (simulated or real)  
+- object detection  
+- bounding box visualization  
+- frame‑by‑frame logging  
+
+---
+
+### **7. Run the Motion Engine**
+
+```bash
+python motion_engine/run_motion.py
+```
+
+This executes:
+
+- basic motion primitives  
+- hover, rotate, translate  
+- safety‑checked movement commands  
+
+---
+
+### **8. Good First Issues**
+
+If you’re new to the project, start here:
+
+- Add new CV filters  
+- Improve bounding box stability  
+- Add new motion primitives  
+- Add safety checks for edge cases  
+- Improve simulation realism  
+
+All beginner‑friendly tasks are labeled **Good First Issue** in GitHub.
+
+---
+
+### **9. Contribution Workflow**
+
+1. Create a branch  
+2. Make your changes  
+3. Run tests  
+4. Submit a Pull Request  
+5. Tag your team lead for review  
+
+Full details are in **CONTRIBUTING.md**.
+
+---
+
+### **10. Documentation & Resources**
+
+- **Recruitment Handout (PDF)** — in `/docs`  
+- **System Architecture Diagram** — in `/assets`  
+- **RCOS Project Page** — coming soon  
 
 ---
 
