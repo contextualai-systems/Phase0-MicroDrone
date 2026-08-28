@@ -13,6 +13,8 @@ Download the one‑page Phase‑0 MicroDrone handout:
 - [One‑Page Handout (Word)](assets/1%20page.docx)
 
 This handout includes the QR code linking directly to this repository and provides a concise overview of the engineering + autonomy + entrepreneurship goals of the project.
+
+
 ![QR Code](assets/qr/QR%20Code%20ContextualAI%20Systems.png)
 
 ---
