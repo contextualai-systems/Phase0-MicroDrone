@@ -17,6 +17,7 @@ This handout includes the QR code linking directly to this repository and provid
 
 ![QR Code](assets/qr/QR%20Code%20ContextualAI%20Systems.png)
 
+
 ---
 
 # **Table of Contents**
