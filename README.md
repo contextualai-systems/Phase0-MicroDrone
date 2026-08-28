@@ -18,6 +18,15 @@ This handout includes the QR code linking directly to this repository and provid
 ![QR Code](assets/qr/QR%20Code%20ContextualAI%20Systems.png)
 
 
+## 📑 RCOS Presentation Materials
+
+### RCOS Student Engagement Deck
+Download the 5‑slide deck shown during the RCOS kickoff:
+- [RCOS Student Engagement (PDF)](assets/presentations/RCOS%20Student%20Engagement.pdf)
+
+### Recruitment Handout (Detailed Overview)
+Download the full recruitment handout describing the system modules, teams, architecture, and semester goals:
+- [2026 RPI Recruitment Handout (PDF)](assets/presentations/2026%20RPI%20Recruitment%20Handout%20v6.pdf)
 
 ---
 
