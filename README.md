@@ -5,6 +5,15 @@ Welcome to the Phase‑0 Autonomous MicroDrone Project, an RPI RCOS initiative t
 This is a hands‑on engineering + autonomy + robotics project.  
 You will build the actual drone prototype this semester.
 
+## 📄 One‑Page Project Overview (with QR Code)
+
+Download the one‑page Phase‑0 MicroDrone handout:
+
+- [One‑Page Handout (PDF)](assets/1%20page.pdf)
+- [One‑Page Handout (Word)](assets/1%20page.docx)
+
+This handout includes the QR code linking directly to this repository and provides a concise overview of the engineering + autonomy + entrepreneurship goals of the project.
+
 ---
 
 # **Table of Contents**
