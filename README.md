@@ -87,6 +87,21 @@ Phase0-MicroDrone/
 └── LICENSE.md              # MIT License
 ```
 
+## 2.10 Architecture Summary Diagram
+![Phase‑0 Architecture Diagram](assets/architecture/phase0-architecture.png)
+
+## 2.11 Quick‑Start Flow
+![Phase‑0 Autonomous Drone Quick‑Start Flow](assets/quickstart/phase0-quickstart.png)
+
+This diagram illustrates the autonomous operational cycle of the Phase‑0 MicroDrone:
+1. Launch from roof dock  
+2. Autonomous flight and sensing  
+3. Return‑to‑dock  
+4. Recharge on dock  
+5. Ready for next mission  
+
+No cloud compute, no cart control — the drone operates fully autonomously.
+
 ---
 
 ## 🧩 Getting Started
