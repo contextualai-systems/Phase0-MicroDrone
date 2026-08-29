@@ -31,10 +31,12 @@ Complete 51‑page engineering documentation:
 ---
 
 ## 🔗 QR Code (Direct Link to Repository)
+<img width="600" height="600" alt="QR Code ContextualAI Systems" src="https://github.com/user-attachments/assets/2b93642d-92ce-4751-a33c-f69dd0a10c7e" />
 
 Scan to open this repository instantly:
 
-`[Looks like the result wasn't safe to show. Let's switch things up and try something else!]`
+
+
 
 ---
 
