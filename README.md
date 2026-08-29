@@ -4,6 +4,9 @@
 # **Phase‑0 Autonomous MicroDrone Wildlife Deterrence System**  
 ### CONTEXTUAL·AI™ SYSTEMS — RCOS Fall 2026
 
+![CONTEXTUAL·AI SYSTEMS Logo](assets/banner/logo-render.png)
+
+
 A roof‑mounted autonomous micro‑drone designed to detect wildlife, classify species, execute safe deterrence behaviors, and return to its dock using contextual AI, multi‑axis motion, and strict safety layers.
 
 ---
