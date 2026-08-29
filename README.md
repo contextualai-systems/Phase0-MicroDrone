@@ -1,332 +1,140 @@
-# **ContextualAI Systems — Phase‑0 Autonomous MicroDrone**  
-### **RCOS Fall 2026 — Autonomous Wildlife Deterrence Drone**
-
-Welcome to the Phase‑0 Autonomous MicroDrone Project, an RPI RCOS initiative to design, build, and test a real autonomous drone system capable of detecting wildlife, making decisions, and executing safe deterrence behaviors.  
-This is a hands‑on engineering + autonomy + robotics project.  
-You will build the actual drone prototype this semester.
-
-## 📄 One‑Page Project Overview (with QR Code)
-
-Download the one‑page Phase‑0 MicroDrone handout:
-
-- [One‑Page Handout (PDF)](assets/1%20page.pdf)
-- [One‑Page Handout (Word)](assets/1%20page.docx)
-
-This handout includes the QR code linking directly to this repository and provides a concise overview of the engineering + autonomy + entrepreneurship goals of the project.
-
-
-![QR Code](assets/qr/QR%20Code%20ContextualAI%20Systems.png)
-
-
-## 📑 RCOS Presentation Materials
-
-### RCOS Student Engagement Deck
-Download the 5‑slide deck shown during the RCOS kickoff:
-- [RCOS Student Engagement (PDF)](assets/presentations/RCOS%20Student%20Engagement.pdf)
-
-### Recruitment Handout (Detailed Overview)
-Download the full recruitment handout describing the system modules, teams, architecture, and semester goals:
-- [2026 RPI Recruitment Handout (PDF)](assets/presentations/2026%20RPI%20Recruitment%20Handout%20v6.pdf)
 
 ---
 
-# **Table of Contents**
-1. [Project Overview](#project-overview)  
-2. [System Architecture](#system-architecture)  
-3. [START HERE — Onboarding](#start-here--phase-0-microdrone-onboarding)  
-4. [Tech Stack](#tech-stack)  
-5. [Student Teams](#student-teams-choose-your-track)  
-6. [Getting Started](#getting-started)  
-7. [Good First Issues](#good-first-issues-beginner-friendly)  
-8. [Semester Roadmap](#semester-roadmap-fall-2026)  
-9. [Contribution Guidelines](#contribution-guidelines)  
-10. [Project Resources](#project-resources)  
-11. [Recruitment Handout](#recruitment-handout-pdf)  
-12. [Contact](#contact)  
-13. [QR Code](#qr-code)  
-14. [Final Note](#final-note)
+# **Phase‑0 Autonomous MicroDrone Wildlife Deterrence System**  
+### CONTEXTUAL·AI™ SYSTEMS — RCOS Fall 2026
+
+A roof‑mounted autonomous micro‑drone designed to detect wildlife, classify species, execute safe deterrence behaviors, and return to its dock using contextual AI, multi‑axis motion, and strict safety layers.
 
 ---
 
-# **Project Overview**
-The Phase‑0 MicroDrone is a roof‑mounted autonomous deterrence drone designed to:
+## 🚀 Project Status & Badges
 
-- Detect approaching birds  
-- Classify species  
-- Select deterrence behaviors  
-- Execute multi‑axis motion  
-- Operate safely around humans  
-- Dock autonomously  
-
-The system uses:
-
-- Jetson Nano onboard AI  
-- Computer vision  
-- Motion engine  
-- Safety layer  
-- Docking system  
-- Simulation environment (Gazebo/Webots)
-
-This project is fully student‑built under RCOS.
+`https://img.shields.io/badge/build-active-brightgreen`
+`https://img.shields.io/badge/RCOS-Fall_2026-red`
+`https://img.shields.io/badge/license-MIT-blue`
+`https://img.shields.io/badge/platform-Jetson_Nano-black`
+`https://img.shields.io/badge/type-Autonomous_Deterrence_Drone-orange`
 
 ---
 
-# **System Architecture**
+## 📄 Student Engineering Packet (2026)
+
+Complete 51‑page engineering documentation:
+
+- **PDF Version**  
+  `https://github.com/contextualai-systems/Phase0-MicroDrone/blob/main/docs/Phase0-Student-Engineering-Packet-2026.pdf` [(github.com in Bing)](https://www.bing.com/search?q="https%3A%2F%2Fgithub.com%2Fcontextualai-systems%2FPhase0-MicroDrone%2Fblob%2Fmain%2Fdocs%2FPhase0-Student-Engineering-Packet-2026.pdf")
+
+- **Word DOCX Version**  
+  `https://github.com/contextualai-systems/Phase0-MicroDrone/blob/main/docs/Phase0-Student-Engineering-Packet-2026.docx` [(github.com in Bing)](https://www.bing.com/search?q="https%3A%2F%2Fgithub.com%2Fcontextualai-systems%2FPhase0-MicroDrone%2Fblob%2Fmain%2Fdocs%2FPhase0-Student-Engineering-Packet-2026.docx")
+
+---
+
+## 🔗 QR Code (Direct Link to Repository)
+
+Scan to open this repository instantly:
+
+`[Looks like the result wasn't safe to show. Let's switch things up and try something else!]`
+
+---
+
+## 🧠 System Overview
+
+The Phase‑0 MicroDrone is built around five core engineering modules:
+
+1. **Computer Vision Pipeline**  
+2. **Motion Engine**  
+3. **Safety Layer**  
+4. **Docking System**  
+5. **Simulation Environment**
+
+---
+
+## 🏗️ Project Structure
+
 ```
-+-------------------------+
-| Sensors                |
-| - Front CSI Camera     |
-| - Rear Camera          |
-| - Interior Sensor      |
-| - IMU / IR             |
-+-----------+-------------+
-            v
-+-------------------------+
-| Jetson Nano Compute     |
-| - Python                |
-| - OpenCV                |
-| - CV Pipeline           |
-+-----------+-------------+
-            v
-+-------------------------+
-| Decision Layer          |
-| - Species Logic         |
-| - Safety Rules          |
-| - Motion Selection      |
-+-----------+-------------+
-            v
-+-------------------------+
-| Motion Engine           |
-| - Rise/Tilt/Rotate      |
-| - Interior Micro-Motion |
-+-----------+-------------+
-            v
-+-------------------------+
-| Docking System          |
-| - Alignment             |
-| - Charging Contacts     |
-+-------------------------+
+Phase0-MicroDrone/
+│
+├── assets/                 # QR codes, handouts, presentations
+│   ├── qr/                 # QR code images
+│   └── presentations/      # RCOS decks + recruitment materials
+│
+├── docs/                   # Student Engineering Packet (PDF + DOCX)
+│
+├── cv/                     # Computer vision pipeline
+├── motion_engine/          # Multi-axis motion engine
+├── safety_layer/           # Safety overrides + constraints
+├── docking/                # Docking logic + alignment sensor
+│
+├── electronics/            # Wiring diagrams + GPIO maps
+├── hardware/               # Frame, motors, ESCs, dock components
+│
+├── simulation/             # Gazebo/Webots simulation configs
+├── tests/                  # Unit + integration tests
+│
+├── src/                    # Main Jetson Nano runtime code
+│
+├── README.md               # (You are here)
+└── LICENSE.md              # MIT License
 ```
 
 ---
 
-# **START HERE — Phase‑0 MicroDrone Onboarding**
+## 🧩 Getting Started
 
-Welcome to **CONTEXTUAL·AI™ SYSTEMS — Phase‑0 MicroDrone**.  
-This section gives you everything you need to get set up, run the project, and begin contributing.
-
-### **1. Install Required Tools**
-Install:
-
-- Python 3.10+  
-- pip  
-- Git  
-- VS Code  
-- Webots R2024b  
-- OpenCV (auto‑installed via requirements)
-
-### **2. Clone the Repository**
-```bash
-git clone https://github.com/ContextualAI-Systems/Phase0-MicroDrone.git
-cd Phase0-MicroDrone
+### Clone the repository
+```
+git clone https://github.com/contextualai-systems/Phase0-MicroDrone
 ```
 
-### **3. Install Dependencies**
-```bash
+### Install Python dependencies
+```
 pip install -r requirements.txt
 ```
 
-### **4. Project Structure Overview**
+### Run the system
 ```
-/cv             # Computer vision pipeline
-/motion_engine  # Motion primitives + control logic
-/safety_layer   # Collision avoidance + failsafes
-/docking        # Autonomous docking + charging
-/simulation     # Webots simulation environment
-/docs           # Documentation + handouts
-/assets         # QR codes + diagrams + branding
+python3 src/main.py
 ```
 
-### **5. Run the Simulation**
-Open:
-```
-simulation/worlds/microdrone_world.wbt
-```
-Press **Play**.
+---
 
-### **6. Run the CV Pipeline**
-```bash
-python cv/run_cv.py
-```
+## 👥 RCOS Student Teams (Fall 2026)
 
-### **7. Run the Motion Engine**
-```bash
-python motion_engine/run_motion.py
-```
-
-### **8. Good First Issues**
-- Add CV filters  
-- Improve bounding box stability  
-- Add motion primitives  
-- Add safety checks  
-- Improve simulation realism  
-
-### **9. Contribution Workflow**
-1. Create a branch  
-2. Make changes  
-3. Run tests  
-4. Submit PR  
-5. Tag team lead  
-
-### **10. Documentation & Resources**
-- Recruitment Handout (PDF)  
-- Architecture Diagram  
-- RCOS Project Page (coming soon)
+- Computer Vision  
+- Motion Engine  
+- Safety Layer  
+- Docking System  
+- Electronics + Hardware  
+- Simulation  
 
 ---
 
-# **Tech Stack**
-### **Languages & Frameworks**
-- Python  
-- OpenCV  
-- ROS2 (optional)  
-- Gazebo/Webots  
-- Embedded C/C++ (optional)
+## 🛠️ Contribution Guidelines
 
-### **Hardware**
-- Jetson Nano  
-- Brushless motors + ESCs  
-- CSI cameras  
-- IMU + IR sensors  
-- Custom docking system
+- Fork the repo  
+- Create a feature branch  
+- Submit a pull request  
+- Follow coding standards in `/docs`  
+- Test safety overrides before flight  
 
 ---
 
-# **Student Teams (Choose Your Track)**
+## 📬 Contact
 
-### **Computer Vision Team**
-- Species detection  
-- Approach‑angle detection  
-- Interior‑cart detection  
-- OpenCV + Python
-
-### **Motion Engine Team**
-- Rise / tilt / rotation logic  
-- Interior micro‑motion  
-- Control algorithms
-
-### **Safety Layer Team**
-- Human detection  
-- No‑launch zones  
-- Interior mode logic  
-- Rule‑based systems
-
-### **Docking & Electronics Team**
-- Dock sensor logic  
-- Charging contacts  
-- Alignment system  
-- GPIO + embedded systems
-
-### **Simulation Team**
-- Gazebo/Webots environment  
-- Drone physics  
-- Motion engine testing
+**Jeffrey N. Barat**  
+Founder — CONTEXTUAL·AI™ SYSTEMS  
+RPI RCOS Project Lead  
+Palm Beach Gardens, FL
 
 ---
 
-# **Getting Started**
+## 🏁 Final Note
 
-### **1. Clone the repository**
-```bash
-git clone https://github.com/ContextualAI-Systems/Phase0-MicroDrone.git
-cd Phase0-MicroDrone
-```
-
-### **Quick Access (QR Code)**
-Scan the QR code below to open this repository instantly:
-
-`[Looks like the result wasn't safe to show. Let's switch things up and try something else!]`
-
-### **2. Install dependencies**
-(Requirements file or Docker container will be provided.)
-
-### **3. Run the simulation**
-Instructions will be provided for Gazebo/Webots.
-
-### **4. Pick an issue**
-Start with a **Good First Issue**.
+This repository contains the complete engineering, autonomy, and safety architecture for the Phase‑0 MicroDrone Wildlife Deterrence System.
 
 ---
 
-# **Good First Issues (Beginner Friendly)**
-
-- Add logging to CV pipeline  
-- Write documentation for motion engine  
-- Create simple OpenCV script  
-- Build tilt/rotation behavior in simulation  
-- Add interior‑sensor mock data  
-- Improve simulation assets  
-- Create unit tests for safety rules  
-
----
-
-# **Semester Roadmap (Fall 2026)**
-
-### **Week 1–2**
-Jetson setup, CV pipeline scaffolding, simulation environment
-
-### **Week 3–4**
-Motion engine prototype, sensor integration
-
-### **Week 5–6**
-Safety layer implementation, interior mode logic
-
-### **Week 7–8**
-Docking system integration, full system assembly
-
-### **Week 9–10**
-Field testing, refinement, demo preparation
-
----
-
-# **Contribution Guidelines**
-- Open‑source under RCOS guidelines  
-- Use branches + pull requests  
-- Document your code  
-- Write tests where possible  
-- Attend weekly stand‑ups  
-- Collaborate across sub‑teams  
-- Be kind, supportive, and curious  
-
----
-
-# **Project Resources**
-- Student Engineering Packet (PDF)  
-- Slides (RCOS Pitch Deck)  
-- Slack/Discord (QR code)
-
----
-
-# **Recruitment Handout (PDF)**
-`[Looks like the result wasn't safe to show. Let's switch things up and try something else!]`
-
----
-
-# **Contact**
-**Jeffrey Barat**  
-Founder, ContextualAI Systems  
-Palm Beach Gardens, FL  
-Email: contextualaisystems@yourdomain.com
-
----
----
-
-# **Final Note**
-This is a **real autonomous system**.  
-You will build the **actual drone prototype** this semester.  
-Your work will be part of a continuing project with opportunities for follow‑on development outside RCOS.
-
-Let’s build something real.
 
 
 
