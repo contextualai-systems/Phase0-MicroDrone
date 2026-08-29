@@ -10,11 +10,18 @@ A roof‑mounted autonomous micro‑drone designed to detect wildlife, classify 
 
 ## 🚀 Project Status & Badges
 
-`https://img.shields.io/badge/build-active-brightgreen`
-`https://img.shields.io/badge/RCOS-Fall_2026-red`
-`https://img.shields.io/badge/license-MIT-blue`
-`https://img.shields.io/badge/platform-Jetson_Nano-black`
-`https://img.shields.io/badge/type-Autonomous_Deterrence_Drone-orange`
+https://img.shields.io/badge/build-active-brightgreen
+https://img.shields.io/badge/RCOS-Fall_2026-red
+https://img.shields.io/badge/license-MIT-blue
+https://img.shields.io/badge/platform-Jetson_Nano-black
+https://img.shields.io/badge/type-Autonomous_Deterrence_Drone-orange
+https://img.shields.io/badge/python-3.8+-yellow
+https://img.shields.io/badge/OpenCV-4.x-green
+https://img.shields.io/badge/TensorRT-Enabled-purple
+https://img.shields.io/badge/simulation-Gazebo/Webots-lightblue
+https://img.shields.io/badge/GPIO-Jetson_GPIO-orange
+https://img.shields.io/badge/docs-Complete_51_pages-blue
+https://img.shields.io/badge/contributions-welcome-brightgreen
 
 ---
 
