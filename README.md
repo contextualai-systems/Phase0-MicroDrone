@@ -22,14 +22,11 @@ A roof‑mounted autonomous micro‑drone designed to detect wildlife, classify 
 
 Complete 51‑page engineering documentation:
 
-- **PDF Version**  
-  `https://github.com/contextualai-systems/Phase0-MicroDrone/blob/main/docs/Phase0-Student-Engineering-Packet-2026.pdf` [(github.com in Bing)](https://www.bing.com/search?q="https%3A%2F%2Fgithub.com%2Fcontextualai-systems%2FPhase0-MicroDrone%2Fblob%2Fmain%2Fdocs%2FPhase0-Student-Engineering-Packet-2026.pdf")
+PDF Version  
+https://github.com/contextualai-systems/Phase0-MicroDrone/blob/main/docs/STUDENT%20ENGINEERING%20PACKET%20V3.pdf (github.com in Bing)
 
-- **Word DOCX Version**  
-  `https://github.com/contextualai-systems/Phase0-MicroDrone/blob/main/docs/Phase0-Student-Engineering-Packet-2026.docx` [(github.com in Bing)](https://www.bing.com/search?q="https%3A%2F%2Fgithub.com%2Fcontextualai-systems%2FPhase0-MicroDrone%2Fblob%2Fmain%2Fdocs%2FPhase0-Student-Engineering-Packet-2026.docx")
-
----
-
+Word DOCX Version  
+https://github.com/contextualai-systems/Phase0-MicroDrone/blob/main/docs/STUDENT%20ENGINEERING%20PACKET%20V3.docx (github.com in Bing)
 ## 🔗 QR Code (Direct Link to Repository)
 <img width="600" height="600" alt="QR Code ContextualAI Systems" src="https://github.com/user-attachments/assets/2b93642d-92ce-4751-a33c-f69dd0a10c7e" />
 
