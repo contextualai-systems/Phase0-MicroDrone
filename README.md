@@ -18,10 +18,10 @@ A roof‑mounted autonomous micro‑drone designed to detect wildlife, classify 
 Complete 51‑page engineering documentation:
 
 PDF Version  
-https://github.com/contextualai-systems/Phase0-MicroDrone/blob/main/docs/STUDENT%20ENGINEERING%20PACKET%20V3.pdf (github.com in Bing)
+https://github.com/contextualai-systems/Phase0-MicroDrone/blob/main/docs/STUDENT%20ENGINEERING%20PACKET%20V3.pdf
 
 DOCX Version  
-https://github.com/contextualai-systems/Phase0-MicroDrone/blob/main/docs/STUDENT%20ENGINEERING%20PACKET%20V3.docx (github.com in Bing)
+https://github.com/contextualai-systems/Phase0-MicroDrone/blob/main/docs/STUDENT%20ENGINEERING%20PACKET%20V3.docx
 
 
 ---
