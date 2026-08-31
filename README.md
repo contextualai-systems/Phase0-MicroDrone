@@ -4,27 +4,12 @@
 # **Phase‑0 Autonomous MicroDrone Wildlife Deterrence System**  
 ### CONTEXTUAL·AI™ SYSTEMS — RCOS Fall 2026
 
-![CONTEXTUAL·AI SYSTEMS Logo](assets/banner/logo-render.png)
+![CONTEXTUAL·AI SYSTEMS Logo](https://raw.githubusercontent.com/contextualai-systems/Phase0-MicroDrone/refs/heads/main/assets/assets/banner/ContextualAI%20logo.png)
+
 
 
 A roof‑mounted autonomous micro‑drone designed to detect wildlife, classify species, execute safe deterrence behaviors, and return to its dock using contextual AI, multi‑axis motion, and strict safety layers.
 
----
-
-## 🚀 Project Status & Badges
-
-https://img.shields.io/badge/build-active-brightgreen
-https://img.shields.io/badge/RCOS-Fall_2026-red
-https://img.shields.io/badge/license-MIT-blue
-https://img.shields.io/badge/platform-Jetson_Nano-black
-https://img.shields.io/badge/type-Autonomous_Deterrence_Drone-orange
-https://img.shields.io/badge/python-3.8+-yellow
-https://img.shields.io/badge/OpenCV-4.x-green
-https://img.shields.io/badge/TensorRT-Enabled-purple
-https://img.shields.io/badge/simulation-Gazebo/Webots-lightblue
-https://img.shields.io/badge/GPIO-Jetson_GPIO-orange
-https://img.shields.io/badge/docs-Complete_51_pages-blue
-https://img.shields.io/badge/contributions-welcome-brightgreen
 
 ---
 
@@ -35,14 +20,8 @@ Complete 51‑page engineering documentation:
 PDF Version  
 https://github.com/contextualai-systems/Phase0-MicroDrone/blob/main/docs/STUDENT%20ENGINEERING%20PACKET%20V3.pdf (github.com in Bing)
 
-Word DOCX Version  
+DOCX Version  
 https://github.com/contextualai-systems/Phase0-MicroDrone/blob/main/docs/STUDENT%20ENGINEERING%20PACKET%20V3.docx (github.com in Bing)
-## 🔗 QR Code (Direct Link to Repository)
-<img width="600" height="600" alt="QR Code ContextualAI Systems" src="https://github.com/user-attachments/assets/2b93642d-92ce-4751-a33c-f69dd0a10c7e" />
-
-Scan to open this repository instantly:
-
-
 
 
 ---
@@ -134,7 +113,7 @@ python3 src/main.py
 
 ---
 
-## 🛠️ Contribution Guidelines
+## 🛠️ Contributing
 
 - Fork the repo  
 - Create a feature branch  
@@ -150,12 +129,6 @@ python3 src/main.py
 Founder — CONTEXTUAL·AI™ SYSTEMS  
 RPI RCOS Project Lead  
 Palm Beach Gardens, FL
-
----
-
-## 🏁 Final Note
-
-This repository contains the complete engineering, autonomy, and safety architecture for the Phase‑0 MicroDrone Wildlife Deterrence System.
 
 ---
 
