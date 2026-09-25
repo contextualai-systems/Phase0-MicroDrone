@@ -4,31 +4,48 @@
 
 ## Purpose
 
-Enforce application-level constraints on simulated mission commands from the first flight milestone. PX4's own failsafes remain active. Simulation tests demonstrate behavior under specified conditions; they do not establish hardware safety.
+Enforce application-level constraints on simulated mission commands. Phase 0 is
+fully synthetic: no PX4, no Gazebo, pretend 3D coordinates and predefined states.
+Simulation tests demonstrate behavior under specified conditions; they do not
+establish hardware safety.
 
-Motion/navigation leads implementation. CV publishes observations only; simulation supplies failure fixtures, and the safety layer owns all safety decisions.
+Motion/navigation leads implementation. CV publishes observations only;
+simulation supplies failure fixtures, and the safety layer owns all safety decisions.
 
 ## Inputs and outputs
 
-- Inputs: vehicle-state freshness, requested targets, configured limits/geofence, simulated battery status, operator abort, and docking/vision validity.
+- Inputs: the `safety` section of each observation — people_nearby, cart_moving,
+  weather, camera_ok, comm_ok — plus the current state and requested target.
+  Battery status is owned by the docking module.
 - Outputs: permitted action or override, reason, timestamp, and event logs.
-- All mission and docking targets pass through enforcement before being sent to PX4.
-- Missing or stale required inputs must have explicit behavior.
+- Every movement request passes through safety before motion acts on it.
+- Missing or stale required inputs must have explicit behavior: unknown is treated
+  as unsafe, never as safe.
+
+## Implementation
+
+- `safety_layer/safety_decision.py` — `SafetyDecision` (allowed, action, reason,
+  timestamp) and `check_request()`, a Phase-0 placeholder that approves all requests.
+- `tests/test_safety_decision.py` — run with
+  `python -m unittest tests.test_safety_decision -v`
 
 ## First tasks
 
-1. Define position/velocity limits, geofence, and state/command timeouts.
+1. Lock the Safety → State Machine contract: which states a decision may produce.
 2. Define controlled abort behavior for each flight state.
-3. Reject or constrain invalid targets before transmission.
-4. Inject stale telemetry, command loss, and low battery in simulation.
-5. Test missing or stale synthetic inputs during docking with the docking team.
+3. Define thresholds for each safety field, including which weather values are safe.
+4. Reject or constrain invalid targets before transmission.
+5. Inject command loss, camera failure, and stale inputs in simulation.
+6. Adopt the shared logging format once finalized.
 
-Distinguish a controlled abort (such as hold or land under specified conditions) from motor termination. Document when each action is available. Avoid blanket rules that disable stabilization while demanding a controlled landing.
+Distinguish a controlled abort (such as hold or land under specified conditions)
+from motor termination. Document when each action is available.
 
-Use explicitly labeled synthetic inputs for observation-related tests. A CV stub does not demonstrate real-world detection capability.
+Bird type and distance are not safety inputs. Distance cannot be derived from a
+2D image, so no safety rule should depend on it.
 
 ## Acceptance evidence
 
-Each scenario records the input condition, expected response, observed response, and timing. Agree thresholds and pass/fail criteria before testing. Verify that ordinary mission commands cannot override an active constraint.
-
-Implementation files and run commands have not yet been created.
+Each scenario records the input condition, expected response, observed response,
+and timing. Agree thresholds and pass/fail criteria before testing. Verify that
+ordinary mission commands cannot override an active constraint.
