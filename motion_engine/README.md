@@ -1,14 +1,17 @@
-# Motion Engine Module — Phase‑0 MicroDrone
+# Motion Engine — Phase 0
+
+[Phase 0 scope: Start Here](../START_HERE.md)
 
 ## Purpose
-The Motion Engine module defines how the drone *would* move — without actually controlling hardware in Phase‑0.  
-This semester focuses on **motor command stubs**, **PID structure**, and **test harnesses**.
 
-## Responsibilities (Phase‑0)
-- Provide motor command stubs (no real ESC output)
-- Define PID controller structure
-- Log motor commands for debugging
-- Provide a test harness for simulated movement
+Translate permitted high-level movement targets into PX4 external-control commands. PX4 supplies low-level flight stabilization in simulation. Building a replacement flight PID or directly driving motors is not required for this semester.
+
+## Inputs and outputs
+
+- Inputs: navigation/docking targets, estimated vehicle state, safety decisions.
+- Outputs: bounded PX4 position or velocity targets and yaw commands; command/status logs.
+- Define units, coordinate frames, command expiration, and external-control lifecycle before connecting modules.
+- Log requested and sent targets separately from observed vehicle motion.
 
 ---
 

@@ -1,20 +1,16 @@
 # Contributing to Phase‑0 MicroDrone
 Thank you for your interest in contributing to the Phase‑0 Autonomous MicroDrone Project!  
-This is an RCOS Fall 2026 initiative to design, build, and test a real autonomous wildlife‑deterrence drone.  
-All contributions—code, documentation, simulation assets, electronics work, and testing—are welcome.
+This RCOS Fall 2026 initiative develops software and simulation foundations for a future microdrone.
+Phase 0 contributions include code, documentation, simulation fixtures, and tests.
 
 ---
 
 ## Project Overview
-The Phase‑0 MicroDrone is a roof‑mounted autonomous deterrence drone that:
-- Detects approaching birds
-- Classifies species
-- Selects deterrence behaviors
-- Executes multi‑axis motion
-- Operates safely around humans
-- Docks autonomously
+Read [START_HERE.md](START_HERE.md) for the authoritative Phase 0 scope and team responsibilities.
 
-The full technical specification is available in `/docs/Student Engineering Packet.pdf`.
+CV work is limited to synthetic frames, preprocessing, logging, and timestamped detection stubs. Other modules consume those observations and own mission, docking, and safety decisions. Marker detection is optional stretch work; pose estimation belongs in Phase 1.
+
+Hardware integration and further capabilities will be scoped separately.
 
 ---
 

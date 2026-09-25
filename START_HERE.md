@@ -1,250 +1,121 @@
+# Start Here — Phase 0 MicroDrone, RCOS Fall 2026
 
+## Working proposal
 
-### *Phase‑0 MicroDrone — RCOS Onboarding Guide*
+Phase 0 builds an open-source simulation and reusable robotics foundation for a future microdrone platform. The broader product concept is a drone that operates from a golf cart dock; this semester focuses on software and simulation, with no physical flight or hardware integration.
 
-Welcome to **ContextualAI Systems — Phase‑0 MicroDrone**.  
-This guide is your starting point for understanding the project, the architecture, and how to begin contributing immediately.
-
-If you’re a new RCOS student evaluating projects, this document will help you decide whether this project is a good fit for your interests and skill level.
+**Semester demonstration:** a simulated drone takes off, follows waypoints, returns to a stationary landing pad, with flight logs and tested safety overrides.
 
----
+This guide defines the authoritative Phase 0 scope for the RCOS team. It describes proposed work, not completed functionality. The repository currently contains documentation and placeholder files; a reproducible runtime and dependency setup still need to be established.
 
-## 🌟 What This Project Is  
-Phase‑0 MicroDrone is the **foundation layer** of a fully autonomous drone system.  
-In Phase‑0, we are not flying hardware — instead, we are building the **software architecture** that future semesters will expand into real autonomy.
+## Phase 0 scope
 
-This semester focuses on:
+| Workstream | Required work |
+| --- | --- |
+| Simulation | Worlds, existing vehicle models, simulated sensors, and repeatable fixtures |
+| CV | Synthetic frames, preprocessing, logging, and a simple detection stub |
+| Motion and navigation | Generic movement commands, waypoint logic, and state logging |
+| Safety and docking | Constraints, state transitions, and alignment tests using explicit synthetic inputs |
 
-- Clean module architecture  
-- Simulation‑ready stubs  
-- Logging  
-- Safety scaffolding  
-- Navigation basics  
-- Vision preprocessing  
-- Docking logic  
-- Motion engine structure  
+The demonstration and tests use public dependencies, synthetic inputs, and documented test logic. Physical construction and hardware integration are outside Phase 0.
 
-Everything is designed to be beginner‑friendly and approachable.
+**CV completion does not require a working detector.** 2D marker detection is a stretch goal. Pose estimation belongs in Phase 1; further work will be scoped separately.
 
----
+The [Student Engineering Packet V3](docs/STUDENT%20ENGINEERING%20PACKET%20V3.pdf) describes a broader system and contains conflicting publication, ownership, hardware, and student-deliverable requirements. Use this working proposal for semester planning; the project stakeholders still need to reconcile those requirements. This guide does not resolve ownership or licensing agreements. The repository includes an [MIT license](LICENSE.md); third-party dependencies and assets retain their own licenses.
 
-## 🚀 Future Semesters & Entrepreneurial Pathways  
-This project is intentionally designed to grow **beyond Phase‑0**.
+## Proposed stack
 
-### **Phase‑1 (Spring 2027)**  
-- Hardware integration  
-- Real sensor input  
-- Real motor control  
-- Real docking pad  
-- First autonomous behaviors  
-- Safety validation on real micro‑drone hardware  
-- MDL (Multidisciplinary Design Lab) involvement
+| Tool | Purpose |
+| --- | --- |
+| Gazebo | World, vehicle physics, and simulated camera/sensor data |
+| PX4 SITL (software in the loop) | Autopilot running on a development computer |
+| ROS 2 | Communication between perception, navigation, and PX4 |
+| Python + OpenCV | Application logic, preprocessing, and synthetic detection output |
 
-### **Phase‑2 (Fall 2027)**  
-- Full autonomy loop  
-- Vision‑based navigation  
-- Obstacle avoidance  
-- Battery‑aware mission planning  
-- Real‑world docking and charging  
-- Advanced simulation environment
+The candidate environment is Ubuntu 24.04, ROS 2 Jazzy, Gazebo Harmonic, and a pinned compatible PX4 release. Validate this combination on a reference machine and record exact versions before onboarding everyone. It is not yet a tested repository setup.
 
-### **Phase‑3 (2028+)**  
-- Multi‑drone coordination  
-- Fleet management  
-- Cloud‑connected autonomy  
-- Commercial applications  
-- Patentable innovations  
-- Startup‑ready architecture
+Start with an existing PX4 quadrotor model. PX4 provides low-level stabilization; RCOS commands positions, velocities, and yaw through an external-control interface. Custom motor control and a replacement flight PID are not required for the demonstration.
 
----
+See the [simulation guide](simulation/README.md) for setup acceptance criteria and upstream documentation.
 
-## 💡 Entrepreneurship & Student Ownership  
-This project is part of **ContextualAI Systems**, a real company initiative.  
-Students who contribute meaningfully can:
+## Architecture and shared interfaces
 
-- Continue working on the project across multiple semesters  
-- Take ownership of modules  
-- Lead teams  
-- Drive innovation  
-- Participate in patent filings  
-- Build portfolio‑ready engineering artifacts  
-- Potentially join the company as interns or collaborators  
-- Help shape a real commercial product
+The intended data flow is:
 
-If you’re entrepreneurial, ambitious, or excited about building something that could become a real startup, this project is a perfect fit.
+1. Gazebo supplies simulated sensor data; PX4 supplies estimated vehicle state.
+2. CV publishes timestamped synthetic detection-stub observations; it does not choose actions.
+3. Navigation manages the mission and requests docking when appropriate.
+4. Docking produces alignment/descent targets from vehicle state and documented synthetic pad/alignment fixtures. CV stub boxes are not 3D position measurements.
+5. Safety validates or overrides requested actions.
+6. Motion sends permitted targets to PX4; telemetry feeds back into the system.
 
----
+PX4 failsafes remain active alongside application-level constraints. CV observations do not directly command motors.
 
-## 🎯 What You Will Learn  
-By contributing to Phase‑0, you’ll gain experience in:
+Before implementation, agree on these contracts:
 
-- Modular software design  
-- Real‑world robotics architecture  
-- Computer vision preprocessing  
-- Navigation and state estimation  
-- Safety systems  
-- Motion control loops  
-- Test harnesses  
-- GitHub workflows  
-- Issue‑based development  
-- Collaborative engineering practices  
+| Interface | Minimum information |
+| --- | --- |
+| Vehicle state | Timestamp, position, velocity, orientation, coordinate frame, flight mode, validity |
+| Vision observation | Timestamp, camera ID, image dimensions, stub label/bounding box, validity, synthetic-source flag |
+| Motion request | Position or velocity target, yaw, frame, limits, expiration |
+| Safety decision | Allowed action or override, reason, timestamp |
+| Mission/docking status | Current state, transition reason, completion or failure |
 
-You do **not** need prior drone experience.  
-You do **not** need robotics experience.  
-You do **not** need advanced math.
+Specify units and coordinate conversions explicitly, including camera frames and PX4 conventions. Yaw is one component of orientation. Keep commanded targets separate from estimated vehicle state, and keep simulation ground truth separate from the state used by the controller.
 
-If you can write Python and follow instructions, you can contribute.
+## Teams and first deliverables
 
----
+| Workstream | Responsibilities | First deliverable |
+| --- | --- | --- |
+| Computer Vision | Synthetic frames, preprocessing, detection stub, observation logs | Repeatable timestamped stub output, including empty/invalid cases |
+| Motion and Navigation | PX4 telemetry, bounded commands, waypoint mission, docking execution | Scripted takeoff, hold, and landing with logs and an abort path |
+| Simulation and integration | Shared environment, sensors, landing pad, reproducible launch | A second member reproduces the stock simulation and reads telemetry/camera data |
 
-## 🧩 Project Architecture Overview  
-Phase‑0 is organized into **five core modules**:
+Safety and docking are shared integration responsibilities. Motion/navigation leads command enforcement and docking states; CV only publishes observations for other modules to consume; simulation supplies scenarios and injected failures. Assign an issue owner for each deliverable.
 
-1. **Vision** — synthetic camera input, preprocessing, logging  
-2. **Motion Engine** — motor command stubs, PID structure, test harness  
-3. **Navigation** — state vector, dead‑reckoning, logging  
-4. **Safety Layer** — battery checks, emergency stop, safety stubs  
-5. **Docking** — alignment logic, docking states, event logging  
+Simulation starts immediately, but does not block offline CV, interface design, or mission-state tests using fake telemetry.
 
-These modules form the backbone of the drone’s autonomy pipeline.
+## Semester milestones
 
----
+| Month | Required outcome |
+| --- | --- |
+| September | Agree scope/interfaces; reproduce stock simulation; read telemetry and camera frames; publish synthetic detection observations; demonstrate basic flight and abort handling |
+| October | Execute waypoints; integrate timestamped stub observations; enforce command limits and geofence behavior |
+| November | Return to the stationary pad, align, and descend; test missing synthetic inputs, stale telemetry, command loss, and simulated low battery |
+| December | Repeat end-to-end demonstrations; report landing error and success rate; document setup, limitations, and handoff |
 
-## 🚀 How to Get Started (10 Minutes)
+For this semester, **docking means landing within an agreed tolerance on a stationary pad using documented synthetic alignment inputs**. It does not include charging, magnetic engagement, or landing on a moving cart.
 
-### **1. Clone the repository**
-```
-git clone https://github.com/contextualai-systems/Phase0-MicroDrone.git
-```
+Stretch work: 2D marker detection. It is not required for the integrated demonstration, which must remain runnable with synthetic fixtures.
 
-### **2. Explore the module folders**
-Each folder contains the code and README for its module.
+## Definition of done
 
-### **3. Pick a Good First Issue**
-Go to:
+- Another member can reproduce the documented environment and demonstration.
+- The mission completes takeoff, waypoints, return, alignment, and landing.
+- Logs capture estimated state, requested commands, observations, and safety/state transitions.
+- Missing synthetic inputs, stale data, command loss, geofence violations, and low-battery scenarios have defined, tested outcomes.
+- Landing tolerance, timeouts, command limits, trial count, and success criteria are agreed before final testing; results include failures.
+- Simulation results are reported as simulation evidence, not real-world safety validation.
 
-**Issues → Labels → good first issue**
+## Module guides
 
-These are designed specifically for onboarding.
+The [original README archive](docs/archive/original-readmes/INDEX.md) preserves the previous central and module documentation for historical reference.
 
-### **4. Read the issue description**
-Each issue explains:
+- [Computer Vision](cv/README.md)
+- [Motion Engine](motion_engine/README.md)
+- [Navigation](navigation/README.md)
+- [Safety Layer](safety_layer/README.md)
+- [Docking](docking/README.md)
+- [Simulation](simulation/README.md)
 
-- What to build  
-- Where it fits  
-- What file to edit  
-- What the expected output is  
+The existing `src/` and `tests/` directories are placeholders for implementation and verification. Hardware and electronics directories are not Phase 0 build assignments.
 
-### **5. Assign the issue to yourself**
-Click **Assignees → yourself**.
+## First pre-code meeting
 
-### **6. Create a branch**
-```
-git checkout -b yourname-issue-XX
-```
+1. Agree the demonstration and record unresolved boundary questions.
+2. Assign the reference simulation setup and a second person to reproduce it.
+3. Define shared messages, coordinate frames, and failure behavior.
+4. Assign the first deliverables above as issues with acceptance criteria.
+5. Schedule an early integrated demonstration and reconcile older onboarding documents.
 
-### **7. Implement the task**
-Follow the instructions in the issue.
-
-### **8. Submit a Pull Request**
-When done:
-
-- Push your branch  
-- Open a PR  
-- Link it to the issue  
-- Request review  
-
----
-
-## 🏁 Recommended First Tasks  
-If you’re brand new, start with one of these:
-
-- **Vision:** Create Synthetic Camera Input Stub (#21)  
-- **Motion:** Create Motor Command Stub (#26)  
-- **Navigation:** Create Basic State Vector Structure (#31)  
-- **Safety:** Create Safety Check Stub (#35)  
-- **Docking:** Create Docking State Structure (#40)
-
-These are the easiest and most self‑contained.
-
----
-
-## 📚 Module Guides  
-Each module has its own README:
-
-- Vision  
-- Motion Engine  
-- Navigation  
-- Safety Layer  
-- Docking  
-
-These explain the purpose, inputs, outputs, and architecture.
-
----
-
-## 🧭 How Issues Are Organized  
-All Phase‑0 issues are labeled:
-
-- `phase:0`  
-- `module:<name>`  
-- `difficulty:easy` or `difficulty:medium`  
-- `starter task` (for onboarding tasks)  
-- `documentation` (for writing READMEs)  
-- `good first issue` (for beginners)
-
-This makes filtering extremely easy.
-
----
-
-## 🤝 How We Work as a Team  
-We follow a simple workflow:
-
-1. Pick an issue  
-2. Assign it to yourself  
-3. Create a branch  
-4. Implement the task  
-5. Submit a PR  
-6. Get review  
-7. Merge  
-8. Celebrate  
-
-We use GitHub Issues + Project Board to track progress.
-
----
-
-## 💬 Communication  
-During RCOS, we will use:
-
-- Slack (RCOS workspace)  
-- GitHub Discussions  
-- Weekly RCOS meetings  
-
-You’ll never be stuck — we help each other.
-
----
-
-## 🧠 Who This Project Is For  
-This project is ideal for students who:
-
-- Want to learn robotics software  
-- Want to work on a real engineering system  
-- Want beginner‑friendly tasks  
-- Want clear structure and guidance  
-- Want to grow into more advanced autonomy work in future semesters  
-- Want to be part of a project with real commercial potential  
-- Want to contribute to something that could become a startup  
-
-If you’re curious, motivated, and enjoy building systems, you’ll fit right in.
-
----
-
-## 🏆 Your First Contribution Awaits  
-Pick a Good First Issue and dive in.  
-You’ll be contributing to a real autonomous drone architecture from day one.
-
-Welcome to **ContextualAI Systems — Phase‑0 MicroDrone**.
-
-Let’s build something amazing together.
-
----
-
+There is no project install or launch command yet. Add one only after it has been verified from a clean checkout.

@@ -17,9 +17,7 @@ View the full pitch deck used during the RCOS kickoff session:
 ---
 
 
-An open-source software and simulation foundation for a future roof-mounted microdrone. Phase 0 focuses on synthetic camera frames, preprocessing, observation stubs, logging, and basic simulated movement and docking interfaces.
-
-[START_HERE.md](START_HERE.md) defines the authoritative semester scope. The engineering packet and recruitment materials below provide historical project context, not additional Phase 0 requirements.
+A roof‑mounted autonomous micro‑drone designed to detect wildlife, classify species, execute safe deterrence behaviors, and return to its dock using contextual AI, multi‑axis motion, and strict safety layers.
 
 ---
 
@@ -69,36 +67,6 @@ Phase‑0 focuses on architecture, stubs, logging, and test harnesses — not ha
 - Future semesters planned  
 - Entrepreneurial pathway  
 - Opportunity to lead modules  
-
-Phase 0 Architecture Clarification (Final)
-This section supersedes both the initial Phase 0 proposal and the updated README changes committed on 9/11 and 9/16. It defines the authoritative architecture for the semester.
-Camera Configuration
-The drone uses front and downward cameras.
-Front camera → forward sensing and general CV pipeline Downward camera → alignment and descent role
-The earlier front and rear concept is retired. The rear camera does not serve a role in Phase 0 or Phase 1. The downward camera is required for Phase 1 marker detection and pose estimation. Phase 0 uses synthetic alignment inputs, so the downward camera’s role is defined even if detection is not implemented.
-Docking
-Phase 0 docking uses synthetic alignment inputs. Real marker detection is optional stretch work. Pose estimation begins in Phase 1.
-Docking station design will move toward a larger pad with magnetic capture instead of precise pin alignment. The drone only needs to land within a defined tolerance. The dock handles final mechanical alignment.
-Cart Sensor
-The cart sensor must detect occupancy and size class.
-Required size classes SMALL = bird scale LARGE = human scale
-Deterrence is only triggered for bird scale objects. Large objects, including humans, do not trigger deterrence. The drone does not use IR or depth sensors in Phase 0.
-Mission Rule
-If the cart is in motion, the drone must return to the docking station or enter a defined safe state. Docking on a moving platform is not part of Phase 0 or Phase 1. This is a hard rule.
-CV Pipeline
-Phase 0 CV uses synthetic frames, preprocessing and timestamped stub observations. No pose estimation. No real marker detection required. The downward camera role is defined but detection can be synthetic.
-Drone Rotation
-The drone will perform a controlled yaw rotation during sensing. Clockwise or counterclockwise is fine. This improves coverage for both cameras and future sensors.
-Environment Setup
-Standardized setup for the entire team:
-Ubuntu 24.04 Noble PX4 1.17 Gazebo Harmonic ROS 2 Jazzy (hold off installing until I pin exact versions)
-PX4 runs the autopilot. Gazebo provides the simulated world. ROS 2 is the bridge between everything. I will post the exact ROS version and installation steps once I finalize the environment.
-Module Responsibilities
-The architecture is fixed. Module boundaries are fixed. Interfaces are fixed. Environment versions are fixed.
-Students have autonomy inside their module, but not in architecture, sensor selection, mission rules, docking logic or environment setup.
-Next Steps for the Team
-Push your module structure. Update your README to match this architecture. List any blockers. Confirm your module responsibilities. Post any questions.
-I will review updates tomorrow afternoon.
 
 ---
 
