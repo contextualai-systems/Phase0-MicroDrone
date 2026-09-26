@@ -1,5 +1,45 @@
 # Computer Vision — Phase 0
 
+## Python module interface
+
+`computer_vision.py` provides a `CVObservation` dataclass and a `ComputerVision`
+reader backed by the existing synthetic source. Run calling code from the
+repository root in the Python environment that has OpenCV and NumPy installed:
+
+```python
+from cv.computer_vision import ComputerVision
+
+vision = ComputerVision()
+vision.start_camera(camera_id="front")  # Default: scenarios/bird_demo.json
+try:
+    for tick in range(150):  # The simulation coordinator owns tick scheduling.
+        observation = vision.read()
+        print(observation.to_dict())
+        # vision.frame: BGR image; vision.gray_frame: preprocessed grayscale.
+finally:
+    vision.stop_camera()
+```
+
+`start_camera(scenario_path=..., camera_id=..., image_path=...)` prepares the
+synthetic camera; `read()` consumes one frame without sleeping, opening a window,
+or writing files. Use the existing `synthetic_frames.py` CLI for the visual demo.
+Finite scenarios raise `StopIteration` when exhausted. Stop before restarting;
+a restart begins a new fixture timeline at zero.
+
+`CVObservation` includes `detected`, `bird_type`, `distance_m`, `camera_ok`,
+`timestamp_ns`, frame/source/camera identity, and validity reason. `detected=False`
+means a valid empty frame; `detected=None` means missing input. Missing input also
+clears both cached images. Confidence remains `None` because no real detector runs.
+Consumers evaluate freshness using the fixture clock, not their wall clock.
+
+`to_dict()` returns only CV-owned fields for the coordinator to combine with
+other modules' outputs. It does not replace the full synthetic demo's versioned
+JSONL record or produce battery, docking, safety decisions, or mission state.
+Shared logger integration points are marked `# TODO(shared logger)`; no logger
+dependency is required yet. The observation contract still needs team agreement.
+
+Verification: `python -m unittest discover -s tests -p test_computer_vision.py`
+
 [Team onboarding: Start Here](../START_HERE.md)
 
 ## Architecture authority
@@ -34,11 +74,24 @@ Use `front` and `downward` consistently for camera identity. Document image dime
 
 ### Example JSON observation
 
-The following is a proposed logging contract for the current Phase 0 detection stub, to be agreed with Docking and Navigation. It is not output currently produced by `synthetic_frames.py`; that script generates, preprocesses, displays, and saves images only.
+`synthetic_frames.py` now writes this detection-stub contract to `observations.jsonl` in its output directory. The integration contract still needs agreement with Docking and Navigation. These are fixture-prescribed observations, not detections inferred from pixels.
+
+From the `cv` directory with your virtual environment active:
+
+```bash
+python synthetic_frames.py --headless
+python synthetic_frames.py --headless --camera-id downward --save-all --output-dir synthetic_output/downward
+python synthetic_frames.py --headless --json-stdout
+```
+
+The last command also streams one JSON object per line to standard output, allowing another program to receive it through a pipe. Status messages go to standard error. The file contains an observation for every frame, including empty and missing input. Headless mode runs as fast as possible; `--fps` still defines the fixture timeline, not wall-clock delivery speed.
+
+Saved PNG filenames include camera ID, frame index, and timestamp in nanoseconds. `saved_images` links each observation to its PNGs relative to the output directory; it is empty when no images were saved. By default, only frames 0, 45, 89, and 90 are saved; `--save-all` saves every available frame. Timestamps are metadata, not text burned into the image. Each run replaces `observations.jsonl`; use a different output directory to preserve a run. Old PNGs may remain, so use the current log as the manifest.
 
 ```json
 {
-  "timestamp_ns": 1000000000,
+  "schema_version": 1,
+  "timestamp_ns": 0,
   "clock": "fixture",
   "source_id": "moving_rectangle_v1",
   "frame_index": 0,
@@ -46,6 +99,7 @@ The following is a proposed logging contract for the current Phase 0 detection s
   "image_width": 640,
   "image_height": 480,
   "synthetic": true,
+  "observation_method": "fixture_stub",
   "valid": true,
   "reason": null,
   "detections": [
@@ -53,12 +107,17 @@ The following is a proposed logging contract for the current Phase 0 detection s
       "label": "synthetic_target",
       "bbox_xywh": [20, 80, 80, 60]
     }
-  ]
+  ],
+  "saved_images": {
+    "bgr": "front_frame_0000_0ns_target_bgr.png",
+    "gray": "front_frame_0000_0ns_target_gray.png"
+  }
 }
 ```
 
 - `timestamp_ns` is the source-frame time in nanoseconds, not the time the log was written. Here, `clock: "fixture"` means a deterministic fixture timeline, not Unix time. A replay or simulation must define its clock mapping before consumers evaluate freshness; never compare unrelated clocks or refresh an old observation by changing its timestamp.
 - `source_id` identifies the fixture sequence; `frame_index` identifies the frame within it. `camera_id` is either `front` or `downward`.
+- `schema_version` versions the output contract. `observation_method` distinguishes fixture-prescribed results from future image-based detection. Fixture timestamps start at zero and advance by `1 / fps` seconds per frame, rounded to integer nanoseconds.
 - `bbox_xywh` contains `[x, y, width, height]` in pixels in the reported image dimensions. The origin is the top-left corner, x increases rightward, and y increases downward. The covered region is `[x, x + width)` by `[y, y + height)`.
 - `synthetic: true` identifies generated input and stub results. The box is prescribed by the fixture, not inferred by a detector and not a 3D measurement.
 - `valid` describes whether this observation is usable, not whether an object exists. For a valid empty frame, use `"valid": true`, `"reason": null`, and `"detections": []`.
