@@ -133,4 +133,4 @@ Every transition in the agreed table is covered by a passing test. Each docking 
 
 Phase 1 must implement the same states and respect them in motion control. Real observations replace synthetic ones through the same observation format; the transition logic should not need to change.
 
-Implementation files and run commands have not yet been created. Proposed location: `src/state_machine/`, with tests in `tests/test_state_machine.py`.
+Code lives in this folder: `state_machine.py`, with tests in `tests/`. Run the tests from the repo root with `python3 -m pytest state_machine -v`.
