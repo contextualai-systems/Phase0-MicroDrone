@@ -1,0 +1,11 @@
+{
+  "scenario_id": "rectangle_debug_v1",
+  "fps": 15,
+  "loop": true,
+  "appearance": "rectangle",
+  "segments": [
+    {"frames": 90, "camera_ok": true, "bird": {"detected": true, "type": "bird_fixture", "distance_m": 12.0}},
+    {"frames": 20, "camera_ok": true, "bird": {"detected": false, "type": null, "distance_m": null}},
+    {"frames": 10, "camera_ok": false, "bird": null}
+  ]
+}

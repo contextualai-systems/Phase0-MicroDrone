@@ -1,0 +1,11 @@
+{
+  "scenario_id": "bird_empty_missing_v1",
+  "fps": 15,
+  "loop": true,
+  "appearance": "bird",
+  "segments": [
+    {"frames": 90, "camera_ok": true, "bird": {"detected": true, "type": "bird_fixture", "distance_m": 12.0}},
+    {"frames": 30, "camera_ok": true, "bird": {"detected": false, "type": null, "distance_m": null}},
+    {"frames": 15, "camera_ok": false, "bird": null}
+  ]
+}

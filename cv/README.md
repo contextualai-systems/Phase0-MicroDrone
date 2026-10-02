@@ -25,6 +25,81 @@ No IR or depth sensors are used in Phase 0. Synthetic alignment values are test 
 
 ## Inputs and outputs
 
+### Coordinator interface and shared logging
+
+`ComputerVision` in `computer_vision.py` returns a frozen `CVObservation` from
+each `read()`. Its existing bird fields retain these three distinct outcomes:
+
+| Outcome | `status` | `valid` / `camera_ok` | `detected` | Serialized `bird` |
+| --- | --- | --- | --- | --- |
+| Valid detection | `detected` | true / true | true | Type and synthetic distance |
+| Valid absence | `absent` | true / true | false | False detection, null type/distance |
+| Unavailable input | `unavailable` | false / false | null | null, with `reason = "missing_frame"` |
+
+Unavailable input clears both image buffers. A finite scenario raises
+`StopIteration` and logs `source_exhausted`; it does not create a missing-camera
+observation or reuse the last detection.
+
+`timestamp_ns` and `clock = "fixture"` always describe the original source
+sample. Camera ID, source ID, and frame index are retained in both the returned
+observation and its log record. Timestamps continue increasing when a fixture
+loops; an explicit stop/start begins the fixture at zero again.
+
+The coordinator can supply `timestamp_mapper`, a function from fixture
+nanoseconds to simulation nanoseconds. The mapped value is available as
+`observation.simulation_timestamp_ns` and serialized as
+`mapped_time = {"clock": "simulation", "timestamp_ns": ...}`. Without a mapper,
+the attribute is null and `mapped_time` is omitted. Mapping never overwrites
+source time, and must return a nonnegative integer. The coordinator owns the
+mapping origin, scheduling, and freshness checks; a mapper must not replace a
+sample's time with the current time on each read.
+
+```python
+from cv.computer_vision import ComputerVision
+
+fixture_start_ns = 0
+simulation_start_ns = 5_000_000_000
+cv = ComputerVision(
+    state="IDLE",
+    timestamp_mapper=lambda source_ns: simulation_start_ns + source_ns - fixture_start_ns,
+)
+cv.start_camera(camera_id="front")
+cv.set_log_context(state="HOVERING")  # Coordinator supplies current State.value.
+observation = cv.read()
+cv.stop_camera()
+```
+
+Default logging uses the repository's `UniversalLog` class from
+[`universal_log/Universal_log.py`](../universal_log/Universal_log.py), loaded
+through `cv/universal_logging.py` for package and direct script execution. It logs
+`camera_started`, every `observation`, `source_exhausted`, and `camera_stopped`.
+Repeated `stop_camera()` calls do not duplicate the stop record.
+
+The shared logger receives the coordinator's mission state in `State` and CV's
+module/event/observation fields in `Details`. Logging context defaults to
+`IDLE`; the coordinator must update it using `set_log_context(state=...)` as the
+mission changes. CV does not select mission states. Lifecycle records include
+camera/source identity and, when available, the last observation.
+
+UniversalLog's outer timestamp is wall-clock emission time. Source and mapped
+sample times remain inside `Details`; consumers must use those explicit clocks
+for freshness. The shared class controls its file output under `universal_log/`.
+Tests or coordinators can inject a `log_sink` callable accepting the same entry
+dictionary, including an already configured UniversalLog wrapper.
+
+This integration applies to the callable `ComputerVision` interface. The
+standalone `synthetic_frames.py` fixture-export command continues writing its
+own image/observation artifacts.
+
+Run interface and real-logger tests from the repository root in WSL:
+
+```bash
+source ~/venvs/contextualai-cv/bin/activate
+python -B -m unittest discover -s tests -p test_computer_vision.py -v
+```
+
+### General observation requirements
+
 - Inputs: generated test frames or saved synthetic fixtures, timestamps, and camera identity.
 - Outputs: timestamp, camera ID, image dimensions, placeholder label/bounding box in documented pixel coordinates, and validity.
 - Label stub output as synthetic. Include explicit empty/invalid cases and never present an old observation as current.

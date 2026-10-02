@@ -134,3 +134,18 @@ Every transition in the agreed table is covered by a passing test. Each docking 
 Phase 1 must implement the same states and respect them in motion control. Real observations replace synthetic ones through the same observation format; the transition logic should not need to change.
 
 Code lives in this folder: `state_machine.py`, with tests in `tests/`. Run the tests from the repo root with `python3 -m pytest state_machine -v`.
+
+Simulation loop:
+Pretend 3D coordinates
+CV: Feed birds into camera (Bird? Safetycheck & Dockcheck : Do nothing) Predefined states for images (Kind of bird, distance away) - Elias C
+Dock (battery power, people show up, cart is ready to move, no birds, weather conditions, camera failure, lose communication)? Initiate Docking : Do nothing) - Elias N
+Safety layer (Safetycheck? Move : Don’t Move/Possible dock check) - Jermaine
+Motion ( Move to new X,Y, Z; Leave comments in code for any place a real movement or orientation command might need to be) - Connor
+State Machine - Mykolas
+Universal logging - Will
+Part of Phase 0 Deliverable is what is needed for Phase 1.
+
+
+Be able to, in a running simulation, test each of these values changing.
+
+
