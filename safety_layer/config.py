@@ -31,3 +31,13 @@ SAFE_WEATHER = ("clear", "cloudy")
 
 # Timestamps are in nanoseconds, so this helps convert to seconds.
 NS_PER_S = 1_000_000_000
+
+# Docking / return defaults shared with INTEGRATION_README Sections 5 and 8.
+DOCK_APPROACH_ALTITUDE_M = 5.0
+POSITION_ARRIVAL_TOLERANCE_M = 0.25
+DOCK_ALIGNMENT_TOLERANCE_M = 0.25
+DOCK_YAW_TOLERANCE_DEG = 3.0
+DOCK_ATTEMPT_TIMEOUT_NS = 30 * NS_PER_S
+DOCK_SEARCH_TIMEOUT_NS = 5 * NS_PER_S
+BIRD_ABSENCE_RETURN_NS = 3 * NS_PER_S
+HOVER_RETURN_TIMEOUT_NS = 10 * NS_PER_S
