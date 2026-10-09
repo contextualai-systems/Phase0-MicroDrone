@@ -4,4 +4,7 @@ from .docking_controller import (
     DockingController,
     DockingInput,
     DockingUpdate,
+    PadObservation,
+    ReturnRequest,
+    compute_return_request,
 )
