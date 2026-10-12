@@ -169,5 +169,62 @@ class TestTimeHandling(unittest.TestCase):
         self.assertIn("stale_battery", result.reasons)
 
 
+class TestGroundedConditions(unittest.TestCase):
+    """On the ground, a serious problem means shut off, not land."""
+
+    def test_serious_problem_on_the_ground_disarms(self):
+        result = assess(snapshot(flight_active=False, environment={"comm_ok": False}), NOW)
+        self.assertTrue(result.disarm)
+        self.assertFalse(result.emergency)      # never start a landing on the pad
+        self.assertFalse(result.allows("launch"))
+        self.assertIn("comm_loss", result.reasons)
+
+    def test_bad_weather_on_the_ground_blocks_takeoff(self):
+        result = assess(snapshot(flight_active=False, environment={"weather": "storm"}), NOW)
+        self.assertTrue(result.disarm)
+        self.assertFalse(result.allows("launch"))
+        self.assertIn("weather_hazard", result.reasons)
+
+    def test_abort_on_the_ground_disarms(self):
+        snap = snapshot(flight_active=False)
+        snap["context"]["operator_abort"] = True
+        result = assess(snap, NOW)
+        self.assertTrue(result.abort)
+        self.assertTrue(result.disarm)
+
+    def test_abort_in_the_air_does_not_disarm(self):
+        snap = snapshot()
+        snap["context"]["operator_abort"] = True
+        result = assess(snap, NOW)
+        self.assertTrue(result.abort)
+        self.assertFalse(result.disarm)         # hold instead, it's flying
+        self.assertTrue(result.allows("hold"))
+
+    def test_nothing_wrong_on_the_ground_does_not_disarm(self):
+        result = assess(snapshot(flight_active=False), NOW)
+        self.assertFalse(result.disarm)
+        self.assertTrue(result.grounded)
+        self.assertTrue(result.allows("launch"))
+
+
+class TestMissingFlightStatus(unittest.TestCase):
+    """If we aren't told whether it's flying, assume it is."""
+
+    def test_missing_flight_status_counts_as_flying(self):
+        snap = snapshot(environment={"comm_ok": False})
+        del snap["context"]["flight_active"]
+        result = assess(snap, NOW)
+        self.assertTrue(result.emergency)       # land, don't disarm mid-air
+        self.assertFalse(result.disarm)
+        self.assertFalse(result.grounded)
+
+    def test_drone_reporting_airborne_counts_as_flying(self):
+        snap = snapshot(flight_active=False, environment={"comm_ok": False})
+        snap["vehicle"]["airborne"] = True
+        result = assess(snap, NOW)
+        self.assertTrue(result.emergency)
+        self.assertFalse(result.disarm)
+
+
 if __name__ == "__main__":
     unittest.main()
