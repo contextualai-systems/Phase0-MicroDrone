@@ -8,6 +8,10 @@ If an order is unsafe we hand back a SAFE REPLACEMENT, never a bare "no".
 The integration plan is explicit about this: simply not sending a command
 would leave the drone chasing whatever target it already had.
 
+Which replacement depends on where the drone is:
+  in the air  -> HOVER, or EMERGENCY_LAND in an emergency
+  on the pad  -> DISARM, because a grounded drone must not be told to land
+
 Order shape comes from Motion's shared contract, so Safety and Motion agree
 on field names. That file is expected to move to state_machine/contracts.py
 later; only the import below should need changing.
@@ -34,7 +38,9 @@ KIND_TO_ACTION = {
     MotionCommandType.TAKEOFF: "launch",
     MotionCommandType.MOVE_TO: "tracking",
     MotionCommandType.TRACK_TARGET: "tracking",
-    MotionCommandType.SET_YAW: "tracking",
+    # Turning on the spot doesn't take the drone anywhere, so it answers to
+    # the hold rules rather than the stricter flying ones.
+    MotionCommandType.SET_YAW: "hold",
     MotionCommandType.GOTO_DOCK_APPROACH: "approach",
     MotionCommandType.DESCEND_TO_DOCK: "descent",
     MotionCommandType.HOVER: "hold",
@@ -51,6 +57,7 @@ SPEED_LIMIT = "speed_limit"
 ACTION_NOT_PERMITTED = "action_not_permitted"
 EMERGENCY = "emergency"
 UNDERGROUND_TARGET = "underground_target"
+GROUNDED_DISARM = "grounded_disarm"
 
 
 @dataclass(frozen=True)
@@ -68,24 +75,38 @@ class CommandDecision:
         return not self.allowed
 
 
+# The reason written on each kind of replacement, so logs explain themselves.
+REPLACEMENT_REASONS = {
+    MotionCommandType.HOVER: "safety_hold",
+    MotionCommandType.LAND: "safety_land",
+    MotionCommandType.DISARM: "safety_disarm",
+    MotionCommandType.EMERGENCY_LAND: "emergency_land",
+}
+
+
 def _safety_command(
-    original: Command, kind: MotionCommandType, now_ns: int, reason: str
+    original: Command, kind: MotionCommandType, now_ns: int
 ) -> Command:
     """Build a replacement order from Safety.
 
-    HOVER and EMERGENCY_LAND both act where the drone currently is, so we
-    deliberately drop the original target instead of reusing it: the old
-    destination is exactly what we're trying to stop.
+    HOVER, DISARM and EMERGENCY_LAND all act where the drone currently is,
+    so we deliberately drop the original target instead of reusing it: the
+    old destination is exactly what we're trying to stop.
+
+    The name includes the replacement type (e.g. "c1-safety-hover"). Motion
+    refuses an old name reused for a different order, so if a hover and an
+    emergency landing shared one name, the landing would be rejected. The
+    same hover repeated keeps its name, which Motion treats as a renewal.
     """
     return replace(
         original,
-        command_id=f"{original.command_id}-safety",
+        command_id=f"{original.command_id}-safety-{kind.value.lower()}",
         kind=kind,
         target=None,
         issued_ns=now_ns,
         expires_ns=None if kind in LIFECYCLE_KINDS else now_ns + _validity_ns(),
         source="safety",
-        reason=reason,
+        reason=REPLACEMENT_REASONS[kind],
         max_horizontal_speed_mps=None,
         max_vertical_speed_mps=None,
     )
@@ -144,6 +165,21 @@ def _speed_caps_ok(command: Command) -> bool:
     return True
 
 
+def _fallback_kind(assessment: SafetyAssessment) -> MotionCommandType:
+    """What to send instead of a rejected order.
+
+    On the ground the answer is always DISARM: telling a landed drone to
+    hover leaves it armed on the pad, and telling it to land is meaningless.
+    """
+    if assessment.grounded:
+        return MotionCommandType.DISARM
+    if assessment.allows("hold"):
+        return MotionCommandType.HOVER
+    # Airborne and even holding isn't permitted: something is badly wrong,
+    # so come down.
+    return MotionCommandType.LAND
+
+
 def check_command(
     command: Command, assessment: SafetyAssessment, now_ns: int
 ) -> CommandDecision:
@@ -153,30 +189,41 @@ def check_command(
     assessment: what the first safety check decided this tick
     now_ns:     the current simulation time
     """
-    # 1. An emergency beats everything: come down here, now.
+    # 1. An emergency in the air beats everything: come down here, now.
     if assessment.emergency:
         return CommandDecision(
             allowed=False,
             command=_safety_command(
-                command, MotionCommandType.EMERGENCY_LAND, now_ns, Reason.ACCEPTED
+                command, MotionCommandType.EMERGENCY_LAND, now_ns
             ),
             reasons=(EMERGENCY,) + assessment.reasons,
             timestamp_ns=now_ns,
         )
 
+    # 2. The same conditions on the ground mean shut the motors off instead.
+    if assessment.disarm:
+        return CommandDecision(
+            allowed=False,
+            command=_safety_command(
+                command, MotionCommandType.DISARM, now_ns
+            ),
+            reasons=(GROUNDED_DISARM,) + assessment.reasons,
+            timestamp_ns=now_ns,
+        )
+
     problems = []
 
-    # 2. Is the order itself well formed? Motion's own check covers schema,
+    # 3. Is the order itself well formed? Motion's own check covers schema,
     #    frame, missing targets and bad numbers, so we reuse it.
     malformed = command.validate()
     if malformed is not None:
         problems.append(malformed)
 
-    # 3. Has it gone stale?
+    # 4. Has it gone stale?
     if _expired(command, now_ns):
         problems.append(Reason.COMMAND_EXPIRED)
 
-    # 4. Is this kind of action allowed right now?
+    # 5. Is this kind of action allowed right now?
     try:
         kind = MotionCommandType(command.kind)
     except ValueError:
@@ -190,24 +237,19 @@ def check_command(
         elif not assessment.allows(action):
             problems.append(ACTION_NOT_PERMITTED)
 
-    # 5. Is the destination inside our limits?
+    # 6. Is the destination inside our limits?
     problems.extend(_outside_limits(command.target))
 
-    # 6. Are the speed caps sane?
+    # 7. Are the speed caps sane?
     if not _speed_caps_ok(command):
         problems.append(SPEED_LIMIT)
 
     if problems:
-        # Hovering is how the drone stops. If even holding isn't permitted,
-        # something is badly wrong, so come down instead.
-        fallback = (
-            MotionCommandType.HOVER
-            if assessment.allows("hold")
-            else MotionCommandType.LAND
-        )
         return CommandDecision(
             allowed=False,
-            command=_safety_command(command, fallback, now_ns, Reason.ACCEPTED),
+            command=_safety_command(
+                command, _fallback_kind(assessment), now_ns
+            ),
             reasons=tuple(dict.fromkeys(problems)),
             timestamp_ns=now_ns,
         )
