@@ -42,6 +42,8 @@ class SafetyAssessment:
     battery_low: bool = False        # battery is getting low
     battery_critical: bool = False   # battery is nearly dead
     battery_recovered: bool = False  # battery is charged enough to take off
+    grounded: bool = False           # True = the drone is on the ground
+    disarm: bool = False             # True = shut the motors off where it sits
     reasons: Tuple[str, ...] = field(default_factory=tuple)  # short words explaining why
     timestamp_ns: int = 0            # what time this answer was given
 
@@ -84,6 +86,7 @@ def assess(snapshot: dict, now_ns: int) -> SafetyAssessment:
     blocked = set()   # actions we are NOT allowing
     emergency = False
     abort = False
+    disarm = False
 
     # Pull out the parts we care about. If a part is missing we use an
     # empty box instead, so the code below doesn't crash.
@@ -99,7 +102,13 @@ def assess(snapshot: dict, now_ns: int) -> SafetyAssessment:
     environment_ok = _fresh(environment, now_ns)
 
     # Is the drone currently in the air? Rules are different on the ground.
-    flight_active = bool(context.get("flight_active"))
+    # If we're not told, assume it's flying: treating a flying drone as
+    # grounded would send "disarm" instead of "land", which Motion refuses
+    # in the air, so the drone would keep going.
+    flight_active = (
+        context.get("flight_active") is not False
+        or vehicle.get("airborne") is True
+    )
 
     # Work out the battery situation once, so we don't repeat ourselves.
     percent = battery.get("percent")
@@ -109,29 +118,36 @@ def assess(snapshot: dict, now_ns: int) -> SafetyAssessment:
     battery_recovered = battery_known and percent >= config.BATTERY_RECOVERED_PCT
 
     # ---------- LEVEL 1: EMERGENCY ----------
-    # Only while flying. On the ground there's nothing to land, we just
-    # don't let it take off.
-    if flight_active:
-        if battery_critical:
+    # The same five conditions matter in the air and on the ground, but the
+    # response is different, so we work out which ones apply first.
+    serious = []
+    if battery_critical:
+        serious.append("critical_battery")
+    if not vehicle_ok:
+        # We don't know where it is anymore.
+        serious.append("stale_vehicle")
+    if not battery_ok:
+        # We don't know how much charge is left.
+        serious.append("stale_battery")
+    if environment.get("comm_ok") is not True:
+        # Nobody can send it orders anymore.
+        serious.append("comm_loss")
+    if environment_ok and environment.get("weather") not in config.SAFE_WEATHER:
+        serious.append("weather_hazard")
+    # TODO: also land if the 60-second trip home runs out of time.
+    #       Waiting on the coordinator to track that timer.
+
+    if serious:
+        reasons.extend(serious)
+        if flight_active:
+            # In the air: land immediately.
             emergency = True
-            reasons.append("critical_battery")
-        if not vehicle_ok:
-            # We don't know where it is anymore.
-            emergency = True
-            reasons.append("stale_vehicle")
-        if not battery_ok:
-            # We don't know how much charge is left.
-            emergency = True
-            reasons.append("stale_battery")
-        if environment.get("comm_ok") is not True:
-            # Nobody can send it orders anymore.
-            emergency = True
-            reasons.append("comm_loss")
-        if environment_ok and environment.get("weather") not in config.SAFE_WEATHER:
-            emergency = True
-            reasons.append("weather_hazard")
-        # TODO: also land if the 60-second trip home runs out of time.
-        #       Waiting on the coordinator to track that timer.
+        else:
+            # On the ground: there is nothing to land, so shut the motors
+            # off and don't take off. The integration plan is explicit that
+            # a ground emergency must not start a landing manoeuvre.
+            disarm = True
+            blocked.add("launch")
 
     # ---------- LEVEL 2: ABORT ----------
     # Less serious than an emergency, so we skip this if it's already one.
@@ -145,6 +161,10 @@ def assess(snapshot: dict, now_ns: int) -> SafetyAssessment:
             abort = True
             reasons.append("command_rejected")
         # TODO: also abort on launch and docking timeouts, once we have timers.
+
+        # An abort on the ground means shut the motors off, not hover.
+        if abort and not flight_active:
+            disarm = True
 
     # ---------- LEVEL 3: RESTRICTIONS ----------
     # Here we block only the actions each problem actually affects,
@@ -220,6 +240,8 @@ def assess(snapshot: dict, now_ns: int) -> SafetyAssessment:
         battery_low=battery_low,
         battery_critical=battery_critical,
         battery_recovered=battery_recovered,
+        grounded=not flight_active,
+        disarm=disarm,
         # dict.fromkeys keeps the order but removes repeats, so the same
         # reason doesn't show up twice.
         reasons=tuple(dict.fromkeys(reasons)),
@@ -228,6 +250,4 @@ def assess(snapshot: dict, now_ns: int) -> SafetyAssessment:
 
 
 # STILL TO DO:
-# - Check an actual order (like "fly to this spot") against the speed and
-#   fence limits in config.py, and swap in a safe one if it breaks a rule.
-# - Send our answers to the team's shared log once it's ready.
+# - Send our answers to the team's shared log (universal_log).
