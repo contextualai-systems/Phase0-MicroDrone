@@ -14,6 +14,7 @@ from safety_layer.command_check import (
     ALTITUDE_CEILING,
     EMERGENCY,
     GEOFENCE_BREACH,
+    GROUNDED_DISARM,
     SPEED_LIMIT,
     UNDERGROUND_TARGET,
     check_command,
@@ -39,8 +40,13 @@ def good_order(**changes):
 
 
 def all_clear():
-    """The first safety check's answer when nothing is wrong."""
+    """The first safety check's answer when nothing is wrong, in the air."""
     return assess(snapshot(), NOW)
+
+
+def on_the_ground(**changes):
+    """The first check's answer with the drone sitting on the pad."""
+    return assess(snapshot(flight_active=False, **changes), NOW)
 
 
 class TestGoodOrder(unittest.TestCase):
@@ -52,14 +58,13 @@ class TestGoodOrder(unittest.TestCase):
 
     def test_takeoff_without_an_expiry_is_fine(self):
         """Lifecycle orders may carry no expiry at all."""
-        grounded = assess(snapshot(flight_active=False), NOW)
         takeoff = good_order(
             kind=MotionCommandType.TAKEOFF,
             mission_state="HOVERING",
             expires_ns=None,
             target=Pose(z=5.0),
         )
-        decision = check_command(takeoff, grounded, NOW)
+        decision = check_command(takeoff, on_the_ground(), NOW)
         self.assertTrue(decision.allowed)
 
 
@@ -73,14 +78,13 @@ class TestExpiredOrders(unittest.TestCase):
 
     def test_old_takeoff_without_expiry_still_goes_stale(self):
         """No expiry field, so we measure from when it was issued."""
-        grounded = assess(snapshot(flight_active=False), NOW)
         stale = good_order(
             kind=MotionCommandType.TAKEOFF,
             expires_ns=None,
             issued_ns=NOW - int(0.5 * config.NS_PER_S),
             target=Pose(z=5.0),
         )
-        decision = check_command(stale, grounded, NOW)
+        decision = check_command(stale, on_the_ground(), NOW)
         self.assertIn(Reason.COMMAND_EXPIRED, decision.reasons)
 
 
@@ -139,6 +143,47 @@ class TestPermissionsAreRespected(unittest.TestCase):
         decision = check_command(good_order(kind="do_a_backflip"), all_clear(), NOW)
         self.assertFalse(decision.allowed)
 
+    def test_turning_on_the_spot_follows_the_hold_rules(self):
+        """SET_YAW doesn't go anywhere, so low battery shouldn't block it."""
+        low_battery = assess(snapshot(battery={"percent": 15.0}), NOW)
+        turn = good_order(kind=MotionCommandType.SET_YAW, target=Pose(yaw_deg=90.0))
+        decision = check_command(turn, low_battery, NOW)
+        self.assertTrue(decision.allowed)
+
+
+class TestGroundedBehaviour(unittest.TestCase):
+    """On the pad the answer is disarm, never hover or land."""
+
+    def test_rejected_order_on_the_ground_disarms(self):
+        expired = good_order(expires_ns=NOW - 1)
+        decision = check_command(expired, on_the_ground(), NOW)
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.command.kind, MotionCommandType.DISARM)
+
+    def test_lost_signal_on_the_ground_disarms(self):
+        grounded = on_the_ground(environment={"comm_ok": False})
+        self.assertTrue(grounded.disarm)
+        self.assertFalse(grounded.emergency)        # no landing manoeuvre
+        decision = check_command(good_order(), grounded, NOW)
+        self.assertEqual(decision.command.kind, MotionCommandType.DISARM)
+        self.assertIn(GROUNDED_DISARM, decision.reasons)
+        self.assertIn("comm_loss", decision.reasons)
+
+    def test_bad_weather_on_the_ground_blocks_takeoff(self):
+        grounded = on_the_ground(environment={"weather": "storm"})
+        self.assertFalse(grounded.allows("launch"))
+        takeoff = good_order(
+            kind=MotionCommandType.TAKEOFF, expires_ns=None, target=Pose(z=5.0)
+        )
+        decision = check_command(takeoff, grounded, NOW)
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.command.kind, MotionCommandType.DISARM)
+
+    def test_disarm_replacement_is_well_formed(self):
+        grounded = on_the_ground(environment={"comm_ok": False})
+        decision = check_command(good_order(), grounded, NOW)
+        self.assertIsNone(decision.command.validate())
+
 
 class TestCartMovingDuringDescent(unittest.TestCase):
     """The scenario the integration plan calls out by name."""
@@ -184,3 +229,27 @@ class TestSeveralProblemsAtOnce(unittest.TestCase):
         self.assertIn(GEOFENCE_BREACH, decision.reasons)
         self.assertIn(ALTITUDE_CEILING, decision.reasons)
         self.assertIn(Reason.COMMAND_EXPIRED, decision.reasons)
+
+
+class TestReplacementNames(unittest.TestCase):
+    """Motion rejects an old name reused for a different order."""
+
+    def test_hover_and_emergency_landing_get_different_names(self):
+        low = assess(snapshot(battery={"percent": 15.0}), NOW)
+        dying = assess(snapshot(battery={"percent": 4.0}), NOW)
+        hover = check_command(good_order(), low, NOW).command
+        landing = check_command(good_order(), dying, NOW).command
+        self.assertEqual(hover.command_id, "cmd-1-safety-hover")
+        self.assertEqual(landing.command_id, "cmd-1-safety-emergency_land")
+
+    def test_replacements_say_why_in_the_log(self):
+        low = assess(snapshot(battery={"percent": 15.0}), NOW)
+        dying = assess(snapshot(battery={"percent": 4.0}), NOW)
+        grounded = on_the_ground(environment={"comm_ok": False})
+        self.assertEqual(check_command(good_order(), low, NOW).command.reason, "safety_hold")
+        self.assertEqual(check_command(good_order(), dying, NOW).command.reason, "emergency_land")
+        self.assertEqual(check_command(good_order(), grounded, NOW).command.reason, "safety_disarm")
+
+
+if __name__ == "__main__":
+    unittest.main()
