@@ -1,7 +1,0 @@
-[2026-10-06T21:32:23.521+00:00] HOVERING: {"module":"state_machine","timestamp":1000,"reason":"Bird detected","from":"IDLE","to":"HOVERING"}
-[2026-10-06T21:32:23.522+00:00] TRACKING: {"module":"state_machine","timestamp":1100,"reason":"Bird detected","from":"HOVERING","to":"TRACKING"}
-[2026-10-06T21:32:23.522+00:00] HOVERING: {"module":"state_machine","timestamp":4000,"reason":"Bird not detected","from":"TRACKING","to":"HOVERING"}
-[2026-10-06T21:32:23.522+00:00] DOCKING_INIT: {"module":"state_machine","timestamp":5000,"reason":"Should dock","from":"HOVERING","to":"DOCKING_INIT"}
-[2026-10-06T21:32:23.522+00:00] DOCKING_APPROACH: {"module":"state_machine","timestamp":6000,"reason":"Approach permitted","from":"DOCKING_INIT","to":"DOCKING_APPROACH"}
-[2026-10-06T21:32:23.522+00:00] DOCKED: {"module":"state_machine","timestamp":8000,"reason":"Landed on pad","from":"DOCKING_APPROACH","to":"DOCKED"}
-[2026-10-06T21:32:23.522+00:00] IDLE: {"module":"state_machine","timestamp":9000,"reason":"Battery recovered","from":"DOCKED","to":"IDLE"}

@@ -1,7 +1,10 @@
 # State machine code: picks the next state based on the current state and the observation.
 # It only decides the state and reason; run_loop.py acts on the chosen state.
 
+import math
 from enum import Enum
+
+from safety_layer import config
 
 class State(Enum):
     IDLE = "IDLE"
@@ -29,6 +32,26 @@ def is_airborne(state: State) -> bool:
 def is_permitted(safety: dict, action: str) -> bool:
     permissions = safety.get("permissions") or {}
     return permissions.get(action) is True
+
+# Motion's feedback shows the drone disarmed and grounded at the pad, and it is fresh
+# (at most 0.5 s older than the observation). At the pad means within the same 0.25 m
+# tolerance Docking uses to confirm the landing (INTEGRATION_README.md section 5).
+def resting_at_pad(observation: dict) -> bool:
+    vehicle = observation.get("vehicle") or {}
+    pose = vehicle.get("pose") or {}
+    pad = (observation.get("dock") or {}).get("pad_pose") or {}
+
+    now_ns, stamp = observation.get("timestamp_ns"), vehicle.get("timestamp_ns")
+    fresh = (isinstance(now_ns, int) and isinstance(stamp, int)
+             and 0 <= now_ns - stamp <= config.MAX_OBSERVATION_AGE_S * config.NS_PER_S)
+    if not fresh or vehicle.get("valid") is not True:
+        return False
+    if vehicle.get("armed") is not False or vehicle.get("grounded") is not True:
+        return False
+
+    if not all(isinstance(value, (int, float)) for value in (pose.get("x"), pose.get("y"), pad.get("x"), pad.get("y"))):
+        return False
+    return math.hypot(pose["x"] - pad["x"], pose["y"] - pad["y"]) <= config.DOCK_ALIGNMENT_TOLERANCE_M
 
 
 # The observation is a dictionary in the shared JSON format
@@ -89,9 +112,10 @@ def step(state: State, observation: dict) -> tuple[State, str | None]:
                 return State.DOCKED, "Landed on pad"
 
         # Docked state
-        # Safety owns the battery thresholds
+        # Safety owns the battery thresholds. Leave only once the drone is disarmed
+        # and grounded at the pad (INTEGRATION_README.md section 7)
         case State.DOCKED:
-            if safety.get("battery_recovered") is True:
+            if safety.get("battery_recovered") is True and resting_at_pad(observation):
                 return State.IDLE, "Battery recovered"
 
         # Abort state

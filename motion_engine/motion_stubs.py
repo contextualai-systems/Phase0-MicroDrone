@@ -60,6 +60,7 @@ and on the way in (vehicle_local_position) the inverse:
 from __future__ import annotations
 
 import math
+import numbers
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
@@ -122,6 +123,12 @@ _SNAP_EPS_M: float = 1e-9
 # --------------------------------------------------------------------------
 # Small value types
 # --------------------------------------------------------------------------
+
+
+def _is_real(v: Any) -> bool:
+    """Any real number (int, float, numpy scalar, Fraction ...), but not a
+    bool -- True is an int in Python, and a bool dt is a caller bug."""
+    return isinstance(v, numbers.Real) and not isinstance(v, bool)
 
 
 def wrap_360(deg: float) -> float:
@@ -313,16 +320,26 @@ class MotionStub:
     def landing_settled(self) -> bool:
         """True only when a landing has actually finished on the ground.
 
-        Requires z exactly at ground (the stub snaps onto targets) *and* that
-        the last thing Motion did was a landing (or the disarm after one).
-        `at_target()` is not enough: its arrival tolerance is true 0.25 m
-        above the pad (INTEGRATION_README.md §8).
+        Requires z exactly at ground (the stub snaps onto targets), the
+        landing target's x/y reached too, *and* that the last thing Motion did
+        was a landing (or the disarm after one). `at_target()` is not enough:
+        its arrival tolerance is true 0.25 m above the pad
+        (INTEGRATION_README.md §8). x/y matters because horizontal and
+        vertical speed are capped separately: a descent that starts off the
+        pad can reach z = 0 while still sliding toward it, and that is not a
+        finished landing.
         """
         if abs(self._pose.z - GROUND_Z_M) > _SNAP_EPS_M or self._active is None:
             return False
         if self._active.type not in LANDING_KINDS | {MotionCommandType.DISARM}:
             return False
-        return self._target is None or abs(self._target.z - GROUND_Z_M) <= _SNAP_EPS_M
+        t = self._target
+        if t is None:
+            return True
+        return (
+            abs(t.z - GROUND_Z_M) <= _SNAP_EPS_M
+            and self._pose.horizontal_distance_to(t) <= _SNAP_EPS_M
+        )
 
     # -- shared contract (INTEGRATION_README.md §3-§4) ---------------------
 
@@ -832,6 +849,13 @@ class MotionStub:
         if now_ns is not None:
             self._now_ns = max(self._now_ns, now_ns)
             self._expire_if_needed(now_ns)
+        if not _is_real(dt) or not math.isfinite(dt):
+            # A NaN dt would poison the pose for the rest of the run (and
+            # feedback would still say valid=True); an inf dt would jump the
+            # drone straight onto its target. Treat both as "no time passed".
+            # Expiry above still ran: a bad dt must not keep a stale target alive.
+            self._log("bad_dt", {"dt": repr(dt)}, decision="ignored_bad_dt")
+            return self._pose
         if dt <= 0.0 or self._target is None or not self._armed:
             return self._pose
 
@@ -941,6 +965,16 @@ class MotionStub:
             return
         self._active_contract = None
         if not self._armed or self._target is None:
+            return
+        if self.landing_settled:
+            # The landing already finished on the ground: there is nothing left
+            # to hold. Keep the landing as the active record so feedback keeps
+            # saying `landed` / `landing_settled` -- the state machine disarms
+            # on DOCKED from `grounded`, and Docking is meant to confirm
+            # touchdown from `landing_settled`. Turning it into an expired hold
+            # here would un-land the drone. (landing_settled requires x/y on
+            # the target too, so a touchdown still sliding toward the pad is
+            # not settled and gets the normal hold.)
             return
         # Hold exactly where we are, at the current speed caps, before this
         # tick's movement -- the expired target must not keep pulling.

@@ -1,5 +1,6 @@
 import pytest
 
+from safety_layer.safety_policy import assess
 from state_machine.demos import DEMOS
 from state_machine.run_loop import run_world
 from state_machine.state_machine import step, State
@@ -38,11 +39,31 @@ def docking_with(**changes):
     docking.update(changes)
     return docking
 
-def make_observation(bird = None, battery = None, safety = None, docking = None):
+NOW_NS = 10_000_000_000  # the observation's time in the unit tests (10 s)
+PAD_DOCK = {"pad_pose": {"x": 0.0, "y": 0.0, "z": 0.0, "yaw_deg": 0.0}, "alignment_valid": True, "valid": True}
+
+def vehicle_with(**changes):
+    # Motion's feedback for a drone resting disarmed on the pad, from the previous tick (0.1 s ago),
+    # with some fields changed, e.g. vehicle_with(armed=True)
+    vehicle = {
+        "valid": True,
+        "timestamp_ns": NOW_NS - 100_000_000,
+        "armed": False,
+        "airborne": False,
+        "grounded": True,
+        "pose": {"x": 0.0, "y": 0.0, "z": 0.0, "yaw_deg": 0.0},
+    }
+    vehicle.update(changes)
+    return vehicle
+
+def make_observation(bird = None, battery = None, safety = None, docking = None, vehicle = None):
     # Makes observations in the team's JSON format for testing purposes
     return {
+        "timestamp_ns": NOW_NS,
         "bird": bird or {"detected": False},
         "battery": battery or {"percent": 100, "low": False},
+        "dock": PAD_DOCK,
+        "vehicle": vehicle or vehicle_with(),
         "safety": safety or safety_with(),
         "docking": docking or docking_with(),
     }
@@ -110,6 +131,30 @@ def test_docked_to_idle_when_battery_recovered():
                                                     battery_recovered=False, reasons=["low_battery"]))
     assert step(State.DOCKED, still_low)[0] == State.DOCKED
 
+def test_docked_waits_until_disarmed_and_grounded_at_pad():
+    # A recovered battery is not enough: Motion's fresh feedback must also show the drone
+    # disarmed and grounded at the pad (INTEGRATION_README.md section 7)
+    recovered = safety_with(battery_recovered=True)
+    not_ready = {
+        "still armed": vehicle_with(armed=True),
+        "not grounded": vehicle_with(grounded=False, airborne=True,
+                                     pose={"x": 0.0, "y": 0.0, "z": 1.0, "yaw_deg": 0.0}),
+        "off the pad": vehicle_with(pose={"x": 1.0, "y": 0.0, "z": 0.0, "yaw_deg": 0.0}),
+        "stale feedback": vehicle_with(timestamp_ns=NOW_NS - 1_000_000_000),
+        "invalid feedback": vehicle_with(valid=False),
+    }
+    for name, vehicle in not_ready.items():
+        observation = make_observation(safety=recovered, vehicle=vehicle)
+        assert step(State.DOCKED, observation)[0] == State.DOCKED, name
+
+    missing = make_observation(safety=recovered)
+    del missing["vehicle"]
+    assert step(State.DOCKED, missing)[0] == State.DOCKED
+
+    # Within the 0.25 m pad tolerance counts as at the pad
+    nearly_centered = vehicle_with(pose={"x": 0.2, "y": 0.0, "z": 0.0, "yaw_deg": 0.0})
+    assert step(State.DOCKED, make_observation(safety=recovered, vehicle=nearly_centered))[0] == State.IDLE
+
 def test_docking_init_waits_for_approach_permission():
     # Safety blocks the approach (e.g. cart moving), so the drone holds in DOCKING_INIT
     blocked = make_observation(docking=docking_with(should_dock=True),
@@ -174,13 +219,18 @@ EXPECTED_DEMOS = {
     "full_cycle": {
         "states": [State.HOVERING, State.TRACKING, State.HOVERING, State.DOCKING_INIT,
                    State.DOCKING_APPROACH, State.DOCKED, State.IDLE],
-        "commands": ["ARM", "TAKEOFF", "HOVER", "DESCEND_TO_DOCK", "DISARM"],
+        # Docking flies the approach and descent. Docking aligns with GOTO_DOCK_APPROACH too; the drone is
+        # already over the pad, so the target is the same and it renews the approach command
+        "commands": ["ARM", "TAKEOFF", "HOVER", "GOTO_DOCK_APPROACH", "DESCEND_TO_DOCK", "DISARM"],
         "grounded": True, "armed": False,
     },
     "docking_retry": {
-        "states": [State.HOVERING, State.TRACKING, State.DOCKING_INIT, State.DOCKING_APPROACH, State.ABORT,
-                   State.DOCKING_INIT, State.DOCKING_APPROACH, State.DOCKED, State.IDLE],
-        "commands": ["ARM", "TAKEOFF", "HOVER", "DESCEND_TO_DOCK", "STOP", "HOVER", "DESCEND_TO_DOCK", "DISARM"],
+        "states": [State.HOVERING, State.TRACKING, State.HOVERING, State.DOCKING_INIT, State.DOCKING_APPROACH,
+                   State.ABORT, State.DOCKING_INIT, State.DOCKING_APPROACH, State.DOCKED, State.IDLE],
+        # Each attempt: GOTO_DOCK_APPROACH, then HOVER while Docking searches for the pad alignment.
+        # The first search times out (STOP in ABORT); the second finds it, aligns (GOTO_DOCK_APPROACH) and descends
+        "commands": ["ARM", "TAKEOFF", "HOVER", "GOTO_DOCK_APPROACH", "HOVER", "STOP", "HOVER",
+                     "GOTO_DOCK_APPROACH", "HOVER", "GOTO_DOCK_APPROACH", "DESCEND_TO_DOCK", "DISARM"],
         "grounded": True, "armed": False,
     },
     "emergency": {
@@ -192,6 +242,29 @@ EXPECTED_DEMOS = {
         "states": [State.HOVERING, State.TRACKING, State.DOCKING_INIT],
         "commands": ["ARM", "TAKEOFF", "HOVER"],
         "grounded": False, "armed": True,  # still hovering, waiting for the dock to clear
+    },
+    "not_aligned": {
+        "states": [State.HOVERING, State.TRACKING, State.HOVERING, State.DOCKING_INIT, State.DOCKING_APPROACH,
+                   State.DOCKED, State.IDLE],
+        # The second HOVER is Docking searching above the pad until the alignment is valid;
+        # the second GOTO_DOCK_APPROACH is Docking aligning
+        "commands": ["ARM", "TAKEOFF", "HOVER", "GOTO_DOCK_APPROACH", "HOVER", "GOTO_DOCK_APPROACH",
+                     "DESCEND_TO_DOCK", "DISARM"],
+        "grounded": True, "armed": False,
+    },
+    "cart_during_descent": {
+        "states": [State.HOVERING, State.TRACKING, State.HOVERING, State.DOCKING_INIT, State.DOCKING_APPROACH,
+                   State.ABORT, State.DOCKING_INIT, State.DOCKING_APPROACH, State.DOCKED, State.IDLE],
+        # The second attempt starts with GOTO_DOCK_APPROACH again, to climb back from where the descent stopped.
+        # Aligning renews that same GOTO_DOCK_APPROACH, because the drone is already over the pad
+        "commands": ["ARM", "TAKEOFF", "HOVER", "GOTO_DOCK_APPROACH", "DESCEND_TO_DOCK", "STOP",
+                     "HOVER", "GOTO_DOCK_APPROACH", "DESCEND_TO_DOCK", "DISARM"],
+        "grounded": True, "armed": False,
+    },
+    "comm_loss": {
+        "states": [State.HOVERING, State.TRACKING, State.EMERGENCY_LAND],
+        "commands": ["ARM", "TAKEOFF", "EMERGENCY_LAND"],
+        "grounded": True, "armed": False,  # the emergency landing disarms on touchdown
     },
 }
 
@@ -211,3 +284,36 @@ def test_demo_end_to_end(name):
     vehicle = result["vehicle"]
     assert vehicle.grounded == expected["grounded"]
     assert vehicle.armed == expected["armed"]
+
+def test_descent_waits_until_aligned():
+    # Docking hovers above the pad until the alignment becomes valid at 8000 ms,
+    # aligns on that tick and starts the descent on the next one
+    scenario, duration_ms = DEMOS["not_aligned"]
+    commands = run_world(duration_ms, scenario=scenario)["commands"]
+    descents = [time_ms for time_ms, kind, _, _ in commands if kind == "DESCEND_TO_DOCK"]
+    assert descents == [8100]
+
+def test_cart_moving_stops_descent_on_the_same_tick():
+    # The cart starts moving at 7000 ms, during the descent; the descent is replaced by STOP in that
+    # same tick, before Motion moves the drone (INTEGRATION_README.md section 11)
+    scenario, duration_ms = DEMOS["cart_during_descent"]
+    commands = run_world(duration_ms, scenario=scenario)["commands"]
+    assert (7000, "STOP") in [(time_ms, kind) for time_ms, kind, _, _ in commands]
+
+def test_return_start_time_survives_abort_and_retry(monkeypatch):
+    # The loop gives Safety the time the return started (context return_started_ns), for the 60 s
+    # return deadline. An abort and retry must not restart it, and it clears back in IDLE
+    # (INTEGRATION_README.md sections 6 and 7)
+    contexts = []
+    def recording_assess(snapshot, now_ns):
+        contexts.append(snapshot["context"]["return_started_ns"])
+        return assess(snapshot, now_ns)
+    monkeypatch.setattr("state_machine.run_loop.assess", recording_assess)
+
+    scenario, duration_ms = DEMOS["docking_retry"]
+    transitions = run_world(duration_ms, scenario=scenario)["transitions"]
+    assert State.ABORT in [new for _, _, new, _ in transitions]  # the retry really happens
+
+    # One start time, from the first DOCKING_INIT at 6000 ms, kept through the abort and retry
+    assert {started for started in contexts if started is not None} == {6_000_000_000}
+    assert contexts[-1] is None  # cleared once the drone is back in IDLE

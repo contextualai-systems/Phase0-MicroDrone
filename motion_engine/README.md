@@ -43,6 +43,11 @@ Rules Motion enforces:
   `expires_ns`. Re-sending the active `command_id` with a later expiry renews
   it: no restart, no new log line. If it expires, Motion replaces it with a
   hold at the current pose *before* moving that tick (`status = expired_hold`).
+  The one exception is a landing that has already settled exactly on its
+  target: it stays `landed` / `landing_settled`, because there is nothing left
+  to hold. `landing_settled` needs z = 0 *and* x/y on the target, so a
+  descent that touches down short of the pad (horizontal and vertical speeds
+  are capped separately) is not settled and holds like any other command.
 - **Replacement.** An accepted command replaces the active target
   immediately, so a hold sent this tick stops the drone this tick.
 - **No silent clamps.** A target above the ceiling or outside the geofence is
@@ -53,7 +58,43 @@ Rules Motion enforces:
   expires, and touchdown auto-disarms.
 - **Bad input is a result, not an exception.** Missing target or expiry, NaN
   or inf, wrong frame or schema, future timestamps and reused IDs each come
-  back as a rejected ack with a stable reason (`contracts.Reason`).
+  back as a rejected ack with a stable reason (`contracts.Reason`). A NaN,
+  inf or non-numeric `dt` passed to `step()` is ignored and logged
+  (`bad_dt`, `decision = ignored_bad_dt`).
+
+### Driven by the state machine
+
+[`state_machine/run_loop.py`](../state_machine/run_loop.py) is the coordinator.
+Each tick it calls `step()` for the mission state, sends the matching Motion
+command through `submit()`, then calls `motion.step(0.1, now_ns)` and
+`motion.feedback()`. The mapping (`wanted_command()`) belongs to the state
+machine; this is what Motion sees and guarantees for each state:
+
+| Mission state | Command Motion receives | What Motion does |
+|---|---|---|
+| `IDLE` | nothing | stays on the pad, disarmed |
+| `HOVERING` (launch from `IDLE`) | `ARM` + `TAKEOFF` to 5 m, once each (`arm-N`, `takeoff-N`) | climbs in place at 2 m/s; takeoff has no expiry |
+| `HOVERING` (in the air) | `HOVER`, renewed every tick | holds the pose it had when the hover was accepted |
+| `TRACKING` | nothing yet (no Navigation target) | keeps flying the last command: a takeoff (no expiry) finishes its climb; a hover that is no longer renewed expires into a hold in place |
+| `DOCKING_INIT` | `HOVER`, renewed | holds |
+| `DOCKING_APPROACH` | `DESCEND_TO_DOCK` to the pad, renewed | flies to the pad (x/y) while descending; `status` → `landed` and `landing_settled = True` once exactly on it |
+| `ABORT` | `STOP`, renewed | holds where it is (mid-descent included) |
+| `DOCKED` | `DISARM` once `grounded` and `armed` | disarms; still `landed` / `landing_settled` |
+| `EMERGENCY_LAND` | `EMERGENCY_LAND`, once | descends in place at 1 m/s, latches, auto-disarms on touchdown |
+
+Renewed commands keep their ID (`sm-N`) with a new 0.2 s expiry; a different
+command gets the next ID. If the state machine stops renewing, the normal
+expiry rule applies: a hold in place, unless the drone has already landed.
+
+[`tests/test_state_machine_alignment.py`](tests/test_state_machine_alignment.py)
+runs every demo in [`state_machine/demos.py`](../state_machine/demos.py)
+through a recorded `MotionStub` and checks that Motion accepts every command,
+the trace checker finds nothing, docking demos are `landing_settled` on the
+pad *before* the state machine says `DOCKED`, the emergency demo lands
+straight down, and the blocked-dock demo holds still. (In the demos,
+`landed_on_pad` is scripted, not read from Motion, so "settled before
+`DOCKED`" is a check that the scripts stay realistic.) If the state machine
+changes how it drives Motion, that file is where it shows up.
 
 Limits default to the INTEGRATION_README §5 table (`MotionLimits`): 5 / 2 m/s,
 90 deg/s, 150 m geofence, 30 m ceiling, 0.25 m / 3 deg tolerances, 1 m/s
@@ -86,6 +127,7 @@ longer imports the old `mission.logging_format`.
 
 ```bash
 py -3 -m pytest motion_engine/tests/test_motion_stubs.py motion_engine/tests/test_motion_contract.py motion_engine/tests/test_universal_logging.py
+py -3 -m pytest motion_engine/tests/test_state_machine_alignment.py   # Motion as driven by state_machine/run_loop.py
 py -3 motion_engine/synthetic/generate_motion_data.py      # synthetic CSVs, see synthetic/README.md
 ```
 
@@ -112,7 +154,7 @@ checks Motion's outcome for each:
 | F. Safety hazards | cart moving during descent; hold forbidden; low battery; critical battery mid-approach | descent frozen that tick and resumed under a new ID; lands in place; return still allowed; emergency beats docking |
 | G. Garbage input | 19 kinds of malformed command submitted every tick | the flown path is identical to a clean run |
 | H. Not a landing | link lost 0.2 m above the pad (inside arrival tolerance) | never `landing_settled`, disarm refused |
-| I. Bad `dt` | 0, negative, NaN, inf | NaN/inf are a **known bug**, pinned as strict `xfail` |
+| I. Bad `dt` | 0, negative, NaN, inf, non-numeric | no movement; NaN/inf/non-numeric are logged `ignored_bad_dt`; expiry still runs, and the next good tick resumes normally |
 
 Every scenario is recorded and run through the trace checker below, so no
 test can pass while breaking a speed, fence or latch rule along the way.

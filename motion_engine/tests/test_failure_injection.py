@@ -22,11 +22,12 @@ Sections:
   F. Hazards through the real Safety layer (cart motion, low/critical battery)
   G. Garbage input immunity
   H. Arrival above the pad is not a landing
-  I. Bad tick length (dt) -- two known bugs, pinned as strict xfails
+  I. Bad tick length (dt) -- zero, negative, NaN, inf, non-numeric
 """
 
 import sys
 from dataclasses import replace
+from fractions import Fraction
 from pathlib import Path
 from typing import Callable, List, Optional
 
@@ -769,31 +770,63 @@ def test_zero_or_negative_dt_does_not_move_the_vehicle(dt):
     assert rig.motion.pose == before
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "Known bug: step() only rejects dt <= 0. dt = NaN turns the pose into NaN "
-    "for the rest of the run while feedback stays valid=True; dt = inf jumps "
-    "straight onto the target. Fix: ignore (and log) any non-finite dt."))
-@pytest.mark.parametrize("dt", [float("nan"), float("inf")])
-def test_non_finite_dt_is_ignored(dt):
+@pytest.mark.parametrize("dt", [float("nan"), float("inf"), float("-inf"), None, "0.1", True])
+def test_bad_dt_is_ignored_and_logged(dt):
+    """A non-finite or non-numeric dt is treated as "no time passed": the pose
+    does not move, feedback stays finite, and the tick is logged. (Used to be
+    a known bug: NaN poisoned the pose for the rest of the run while feedback
+    said valid=True, and inf jumped the drone straight onto its target.)"""
     rig = Rig()
     rig.launch()
     rig.tick(rig.cmd(K.MOVE_TO, Pose(20.0, 0.0, 5.0, 0.0)))
     before = rig.motion.pose
     rig.motion.step(dt, now_ns=rig.now)
     assert rig.motion.pose == before
+    fb = rig.motion.feedback(rig.now)
+    assert fb.valid and fb.pose.is_finite()
+    bad = [r for r in rig.log.records if r.event == "bad_dt"]
+    assert len(bad) == 1 and bad[0].decision == "ignored_bad_dt"
 
 
-@pytest.mark.parametrize("dt,rule", [(float("nan"), "finite_pose"),
-                                     (float("inf"), "horizontal_speed")])
-def test_trace_checker_catches_the_non_finite_dt_bug(dt, rule):
-    """Until the bug above is fixed, a bad dt cannot slip through unnoticed:
-    the trace checker flags the corrupted run."""
+@pytest.mark.parametrize("dt", [1, Fraction(1, 10)])
+def test_any_real_number_is_a_valid_dt(dt):
+    """Only non-finite and non-numeric dt values are refused: an int or a
+    Fraction (like a numpy scalar) still moves the drone."""
     rig = Rig()
     rig.launch()
     rig.tick(rig.cmd(K.MOVE_TO, Pose(20.0, 0.0, 5.0, 0.0)))
-    rig.motion.step(dt, now_ns=rig.now)          # the bad tick
+    before = rig.motion.pose.x
+    rig.motion.step(dt, now_ns=rig.now)
+    assert rig.motion.pose.x == pytest.approx(before + LIM.max_horizontal_speed_mps * float(dt))
+    assert not records(rig.log, "bad_dt")
+
+
+@pytest.mark.parametrize("dt", [float("nan"), float("inf")])
+def test_bad_dt_tick_leaves_a_clean_trace_and_flight_resumes(dt):
+    """A bad tick mid-move leaves no trace violation, and the next good tick
+    carries on toward the target at the normal speed."""
+    rig = Rig()
+    rig.launch()
+    move = rig.cmd(K.MOVE_TO, Pose(20.0, 0.0, 5.0, 0.0))
+    rig.tick(move)
+    rig.motion.step(dt, now_ns=rig.now)          # the bad tick (not recorded: no time passed)
     rig.clock.advance(DT)
-    rig.rec.snapshot(rig.now)
-    report = check_trace(rig.rec.samples, limits=rig.motion.limits)
-    assert not report.ok
-    assert rule in report.by_rule()
+    x_before = rig.motion.pose.x
+    rig.tick(rig.renewed(move))
+    assert rig.motion.pose.x == pytest.approx(x_before + LIM.max_horizontal_speed_mps * DT)
+    rig.check()
+
+
+def test_bad_dt_does_not_keep_an_expired_target_alive():
+    """Expiry still runs on a bad tick: once the command is stale, the next
+    good tick holds instead of chasing the old target."""
+    rig = Rig()
+    rig.launch()
+    rig.tick(rig.cmd(K.MOVE_TO, Pose(20.0, 0.0, 5.0, 0.0)))
+    rig.clock.advance(1.0)                       # stall well past the 0.2 s validity
+    rig.motion.step(float("nan"), now_ns=rig.now)
+    assert rig.motion.feedback(rig.now).status == CommandStatus.EXPIRED_HOLD
+    held = rig.motion.pose
+    rig.tick()
+    assert rig.motion.pose == held
+    rig.check()
