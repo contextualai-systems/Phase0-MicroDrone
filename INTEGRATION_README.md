@@ -258,6 +258,10 @@ Cart motion is a hazard fixture. Keep the pad fixed for this milestone; block pa
 
 ### CV
 
+See the [CV roadmap](cv/README.md#phase-0-perception-roadmap) for planned image-based
+perception, detection contracts, and benchmarks. The tasks below cover the current
+synthetic mission-loop adapter.
+
 - Return valid detection, valid absence, and unavailable input distinctly through the existing observation interface.
 - Preserve camera/source identity and original fixture timestamps; support the coordinator's explicit clock mapping.
 - Keep bird observations separate from independent synthetic alignment inputs.

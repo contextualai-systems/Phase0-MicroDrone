@@ -14,19 +14,22 @@ import cv2
 import numpy as np
 
 if __package__:
+    from .perception_types import DetectionResult
     from .synthetic_frames import DEFAULT_SCENARIO, SyntheticSource
     from .universal_logging import log_entry
 else:
+    from perception_types import DetectionResult
     from synthetic_frames import DEFAULT_SCENARIO, SyntheticSource
     from universal_logging import log_entry
 
 
 @dataclass(frozen=True)
 class CVObservation:
-    """CV's answer for one frame; None detection means input was unavailable.
+    """CV's answer for one frame, retaining the legacy bird fixture fields.
 
-    Time is on the source's fixture clock, not wall time. Type and distance
-    are fixture values, not measurements or classifications from the image.
+    For legacy fixtures, None detection means input was unavailable. Generic
+    perception leaves bird fields unset and uses processing_status/detections.
+    Time remains on the source clock; legacy bird type/distance are prescribed.
     """
 
     detected: bool | None
@@ -42,16 +45,26 @@ class CVObservation:
     synthetic: bool = True
     confidence: float | None = None
     simulation_timestamp_ns: int | None = None
+    # None means this legacy fixture did not run generic perception. Empty tuple
+    # means perception ran successfully and found no markers.
+    detections: tuple[DetectionResult, ...] | None = None
+    processing_status: str | None = None
+    calibration_id: str | None = None
+    timings_ns: tuple[tuple[str, int], ...] = ()
 
     @property
     def valid(self) -> bool:
         """Whether a camera sample was available, including an empty frame."""
+        if self.processing_status is not None:
+            return self.camera_ok and self.processing_status == "ok"
         return self.camera_ok and self.detected is not None
 
     @property
     def status(self) -> str:
         if not self.valid:
             return "unavailable"
+        if self.processing_status is not None:
+            return "detected" if self.detections else "absent"
         return "detected" if self.detected else "absent"
 
     def to_dict(self) -> dict:
@@ -83,10 +96,20 @@ class CVObservation:
                 "clock": "simulation",
                 "timestamp_ns": self.simulation_timestamp_ns,
             }
+        if self.processing_status is not None:
+            result.update({
+                "schema_name": "cv_perception", "schema_version": 1,
+                "processing_status": self.processing_status,
+                "calibration_id": self.calibration_id,
+                "detections": None if self.detections is None else [d.to_dict() for d in self.detections],
+                "timings_ns": dict(self.timings_ns),
+            })
         return result
 
     def to_bird_snapshot(self) -> dict:
         """Shared schema-v1 bird section; never relabel source time as now."""
+        if self.processing_status is not None:
+            raise ValueError("Generic perception is not a bird observation")
         if self.simulation_timestamp_ns is None:
             raise ValueError("Snapshot publication requires an explicit simulation clock mapping")
         return {
