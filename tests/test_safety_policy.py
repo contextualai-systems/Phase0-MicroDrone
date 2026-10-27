@@ -169,5 +169,50 @@ class TestTimeHandling(unittest.TestCase):
         self.assertIn("stale_battery", result.reasons)
 
 
+class TestReturnDeadline(unittest.TestCase):
+    """The trip home has 60 seconds. After that, land where you are."""
+
+    def heading_home(self, seconds_ago, flight_active=True):
+        snap = snapshot(flight_active=flight_active)
+        snap["context"]["return_started_ns"] = NOW - int(seconds_ago * config.NS_PER_S)
+        return assess(snap, NOW)
+
+    def test_under_60_seconds_is_fine(self):
+        result = self.heading_home(59.9)
+        self.assertFalse(result.emergency)
+        self.assertNotIn("return_deadline", result.reasons)
+
+    def test_exactly_60_seconds_is_an_emergency(self):
+        """Timers go off at the limit, not just after it."""
+        result = self.heading_home(60)
+        self.assertTrue(result.emergency)
+        self.assertIn("return_deadline", result.reasons)
+
+    def test_over_60_seconds_is_an_emergency(self):
+        result = self.heading_home(75)
+        self.assertTrue(result.emergency)
+        self.assertFalse(result.allows("approach"))   # stop trying to dock
+
+    def test_not_heading_home_is_fine(self):
+        snap = snapshot()
+        snap["context"]["return_started_ns"] = None
+        self.assertFalse(assess(snap, NOW).emergency)
+
+    def test_no_timer_field_is_fine(self):
+        """Older code that doesn't send the timer shouldn't cause emergencies."""
+        self.assertFalse(assess(snapshot(), NOW).emergency)
+
+    def test_on_the_ground_is_not_an_emergency(self):
+        """Already landed, so there's nothing to land."""
+        result = self.heading_home(75, flight_active=False)
+        self.assertFalse(result.emergency)
+
+    def test_start_time_in_the_future_is_ignored(self):
+        """A broken timer must not trigger a landing."""
+        snap = snapshot()
+        snap["context"]["return_started_ns"] = NOW + config.NS_PER_S
+        self.assertFalse(assess(snap, NOW).emergency)
+
+
 if __name__ == "__main__":
     unittest.main()
