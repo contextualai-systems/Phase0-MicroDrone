@@ -52,20 +52,130 @@ landing; holding survives an abort, because holding is how the drone stops.
 ## Files
 
 `config.py` (all threshold numbers) · `safety_policy.py` (situation check) ·
-`command_check.py` (order check) · `safety_decision.py` (original placeholder)
-
+`command_check.py` (order check) · `contracts.py` (`SafetyEvent`, the
+report format) · `safety_decision.py` (original placeholder)
 
 ```
-python -m unittest tests.test_safety_policy tests.test_command_check tests.test_safety_decision -v
+python -m unittest tests.test_safety_policy tests.test_command_check tests.test_safety_event tests.test_safety_decision -v
 ```
 
-32 tests. Simulation time is passed in as `now_ns`; nothing here reads the real
-clock.
+Simulation time is passed in as `now_ns`; nothing here reads the real clock.
 
 ## Safety owns
 
 Battery thresholds, freshness, timeouts, and movement limits. Docking asks
 whether to return; Safety decides whether returning is permitted.
+
+## SafetyEvent
+
+`SafetyEvent` ([`contracts.py`](contracts.py)) is Safety's report for one tick:
+what the drone may do, what Safety did with each order, and why. It is one of
+the six shared formats for Phase 0, next to Motion's `Command` and
+`VehicleFeedback`, CV's `DetectionResult` and the state machine's
+`MissionStatus`. It records decisions; it never makes them.
+
+This is a draft. Field names need team agreement.
+
+### Purpose
+
+Give every module, the shared log and the tests Safety's decisions in one
+fixed format, so nobody re-derives safety rules or invents their own record,
+and so a run can be reconstructed later from the log.
+
+### Publisher and subscribers
+
+- **Publisher:** Safety. The coordinator (`run_loop.py`) builds it each tick
+  with `SafetyEvent.from_checks(assessment, [(order, decision), ...])` after
+  calling `assess()` and `check_command()`.
+- **Subscribers:** the shared log (`universal_log`), the state machine and
+  Docking (which already read the same permissions from `SafetyAssessment`),
+  and tests.
+
+### Fields
+
+| Field | Type | Meaning |
+|---|---|---|
+| `timestamp_ns` | int | Simulation time of this tick |
+| `permissions` | dict | `launch`, `tracking`, `approach`, `descent`, `hold`: each true or false |
+| `emergency` | bool | Land in place now |
+| `abort` | bool | Cancel the current action and hold (disarm if grounded) |
+| `battery_low` | bool | 20% or less |
+| `battery_critical` | bool | 10% or less |
+| `battery_recovered` | bool | 40% or more, enough to launch again |
+| `reasons` | list of str | Every active reason code, most serious first (e.g. `critical_battery`, `cart_moving`) |
+| `commands` | list | One entry per order checked this tick (empty if none) |
+| `schema_version` | int | Always 1 |
+| `clock` | str | Always `"simulation"` |
+| `synthetic` | bool | Always true |
+| `source` | str | Always `"safety"` |
+
+Each `commands` entry:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `requested_id` / `requested_kind` | str | The order that was asked for, e.g. `TRACK_TARGET` |
+| `allowed` | bool | True if it was sent unchanged |
+| `sent_id` / `sent_kind` | str | What actually went to Motion, e.g. `HOVER` if replaced |
+| `reasons` | list of str | Why it was replaced; empty if allowed |
+
+### Units
+
+All times are integer nanoseconds on the simulation clock. Order kinds are
+Motion's uppercase names (`HOVER`). Reasons are lowercase codes.
+
+### Update rate
+
+10 Hz: one event per 0.1 s tick. A launch tick has two `commands` (ARM and
+TAKEOFF); a tick with nothing to send has none.
+
+### Validation rules
+
+`SafetyEvent.validate()` returns a problem code, or `None` if the event is
+fine. `tests/test_safety_event.py` checks every tick of every demo against
+these rules.
+
+- `permissions` has exactly the five actions, each a real true/false.
+- An emergency allows nothing, not even hold.
+- `emergency` and `abort` are never both true (emergency outranks abort).
+- `battery_critical` implies `battery_low`.
+- An emergency or abort always has at least one reason.
+- An allowed order is sent unchanged with no reasons; a replaced order has a
+  different `sent_id` and at least one reason.
+
+### Example payload
+
+Tick 50 of `full_cycle` (5000 ms), the same tick as the `MissionStatus`
+example: low battery and a moving cart, so only hold is allowed, and the
+state machine's hover goes through.
+
+```json
+{
+  "timestamp_ns": 5000000000,
+  "permissions": {"launch": false, "tracking": false, "approach": false, "descent": false, "hold": true},
+  "emergency": false,
+  "abort": false,
+  "battery_low": true,
+  "battery_critical": false,
+  "battery_recovered": false,
+  "reasons": ["low_battery", "cart_moving"],
+  "commands": [
+    {"requested_id": "sm-1", "requested_kind": "HOVER", "allowed": true,
+     "sent_id": "sm-1", "sent_kind": "HOVER", "reasons": []}
+  ],
+  "schema_version": 1,
+  "clock": "simulation",
+  "synthetic": true,
+  "source": "safety"
+}
+```
+
+### Open questions
+
+- Should the coordinator log an event every tick, or only when something
+  changes? Every tick is complete but long.
+- In the `emergency` demo the state machine asks for `EMERGENCY_LAND`, and
+  Safety "replaces" it with an identical `EMERGENCY_LAND` under a new name.
+  Should Safety pass an `EMERGENCY_LAND` through unchanged during an emergency?
 
 ## Not done yet
 
