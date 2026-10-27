@@ -5,6 +5,7 @@ import time
 import dataclasses
 
 from docking.states.docking_controller import DockingController, DockingInput, PadObservation
+from state_machine.contracts import MissionStatus
 from state_machine.demos import DEMO_SCENARIO, DEMOS
 from safety_layer.safety_policy import assess
 from state_machine.state_machine import State, step
@@ -68,6 +69,29 @@ def launch_drone(motion, clock, state, reason, launch_number, assessment):
 # the climb replaces the takeoff and leaves the drone stuck near the ground.
 def still_climbing(vehicle) -> bool:
     return vehicle.active_kind == MotionCommandType.TAKEOFF and not vehicle.arrived
+
+
+# Launch progress for MissionStatus (INTEGRATION_README.md section 2): "none" outside a launch,
+# "climbing" until the takeoff reaches its altitude, then "complete" until the mission leaves HOVERING.
+# "arming" never shows: launch_drone() sends ARM and TAKEOFF on the same tick.
+def current_launch_phase(launching, vehicle) -> str:
+    if not launching:
+        return "none"
+    if still_climbing(vehicle):
+        return "climbing"
+    return "complete"
+
+
+# How the run ended, for the last tick's MissionStatus. Proposal: INTEGRATION_README.md section 10
+# asks to tell completed, interrupted and failed runs apart, but doesn't define them.
+# Back on the pad is "completed", ABORT or EMERGENCY_LAND is "failed", and any other
+# state means time ran out mid-mission ("interrupted").
+def run_outcome(state) -> str:
+    if state in (State.IDLE, State.DOCKED):
+        return "completed"
+    if state in (State.ABORT, State.EMERGENCY_LAND):
+        return "failed"
+    return "interrupted"
 
 
 # Decide which Motion command the mission state wants on this tick.
@@ -147,9 +171,13 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
     bird_absent = None
     hover_started = None
     return_started = None    # the return latch: when the mission first committed to returning home
+    return_reason = None      # why the return started, or None if no return has started
+    launching = False         # True from the launch (IDLE -> HOVERING) until the mission leaves HOVERING
+    state_entered = 0         # when the current state was entered; the mission starts in IDLE at time 0
     active = {"number": 0, "kind": None, "target": None}  # the last command sent to Motion
     vehicle = motion.feedback(clock.timestamp_ns)          # Motion's feedback from the previous tick
     transitions = []
+    statuses = []           # every tick's MissionStatus, for debugging and testing
     commands = []            # every new command sent to Motion: (time_ms, kind, accepted, reason)
     last_command_id = None   # so a command renewed every tick is only recorded once
     for tick in range(duration_ms // TICK_MS):
@@ -187,13 +215,7 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
             if (bird_absent is None):
                 bird_absent = now_ns
 
-        #check time when drone starts to hover
-        if (currState == State.HOVERING and not still_climbing(vehicle)):
-            if hover_started is None:
-                hover_started = now_ns
-        else:
-            hover_started = None
-        # docking 
+        # docking
         dockInputs = DockingInput(
             mission_state=currState.value,
             flight_active=snapshot["context"]["flight_active"],
@@ -220,21 +242,28 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
 
 
         newState, reason = step(currState, snapshot)
+        if newState != currState:
+            state_entered = now_ns
 
         # The return latch starts on the first DOCKING_INIT and keeps that time through aborts and
         # retries, so they can't restart the deadline. It clears once the drone is back in IDLE
         # (INTEGRATION_README.md sections 6 and 7)
         if newState == State.DOCKING_INIT and return_started is None:
             return_started = now_ns
+            return_reason = dockUpdate.reasons[0] if dockUpdate.reasons else reason
         elif newState == State.IDLE:
             return_started = None
+            return_reason = None
 
         # When the drone launches (IDLE -> HOVERING), arm and take off once
         if currState == State.IDLE and newState == State.HOVERING:
             launches += 1
+            launching = True
             for ack in launch_drone(motion, clock, newState, reason, launches, assessment):
                 commands.append((current_time_ms, ack.kind, ack.accepted, ack.reason))
             vehicle = motion.feedback(clock.timestamp_ns)  # so the takeoff shows as the active command
+        elif newState != State.HOVERING:
+            launching = False  # leaving HOVERING ends the launch, even if the climb hadn't finished
 
         # Send (or renew) the command this state wants, before Motion moves this tick
         ack = send_command(motion, clock, active, newState, reason, wanted_command(newState, vehicle, dockUpdate.proposed_target), assessment)
@@ -245,6 +274,34 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
         # Every tick: move the simulated drone, then read where it is
         motion.step(TICK_MS / 1000, now_ns=clock.timestamp_ns)
         vehicle = motion.feedback(clock.timestamp_ns)
+
+        # Ordinary hover time: starts on the tick the mission is in HOVERING with the launch climb
+        # finished, and clears in any other state. Updated after step() so this tick's MissionStatus
+        # matches its state; Docking reads it on the next tick.
+        if newState == State.HOVERING and not still_climbing(vehicle):
+            if hover_started is None:
+                hover_started = now_ns
+        else:
+            hover_started = None
+
+        statuses.append(
+                    MissionStatus(
+                        timestamp_ns=clock.timestamp_ns,
+                        tick=tick,
+                        previous_state=currState,
+                        state=newState,
+                        reason=reason,
+                        state_entered_ns=state_entered,
+                        launch_phase=current_launch_phase(launching, vehicle),
+                        flight_active=vehicle.airborne or vehicle.armed,
+                        bird_absent_since_ns=bird_absent,
+                        hover_started_ns=hover_started,
+                        return_started_ns=return_started,
+                        return_reason=return_reason,
+                        pending_command_failure=None if ack is None or ack.accepted else ack.reason,
+                        outcome=run_outcome(newState) if tick == duration_ms // TICK_MS - 1 else None,  # only on the last tick
+                    ))
+
         clock.advance(TICK_MS/1000)
         if (viewPosition):
             print(current_time_ms, "z =", vehicle.pose.z, "airborne =", vehicle.airborne)
@@ -272,6 +329,7 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
         "transitions": transitions,  # (time_ms, from_state, to_state, reason) for each state change
         "commands": commands,        # (time_ms, kind, accepted, reason) for each new command sent to Motion
         "vehicle": vehicle,          # Motion's feedback after the last tick: pose, armed, airborne, grounded, ...
+        "statuses": statuses,        # every tick's MissionStatus, for debugging and testing
     }
 
 if __name__ == "__main__":
@@ -285,3 +343,5 @@ if __name__ == "__main__":
     result = run_world(duration_ms, True, True, scenario, False)
     for currentTimeMs, currState, newState, reason in result["transitions"]:
         print(f"({currentTimeMs}ms) {currState.value} -> {newState.value}: Reason: {reason}")
+
+

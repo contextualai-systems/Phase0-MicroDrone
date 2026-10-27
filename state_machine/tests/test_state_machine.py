@@ -1,7 +1,9 @@
+import json
+
 import pytest
 
 from safety_layer.safety_policy import assess
-from state_machine.demos import DEMOS
+from state_machine.demos import BIRD_GONE, BIRD_SEEN, DEMOS
 from state_machine.run_loop import run_world
 from state_machine.state_machine import step, State
 
@@ -317,3 +319,85 @@ def test_return_start_time_survives_abort_and_retry(monkeypatch):
     # One start time, from the first DOCKING_INIT at 6000 ms, kept through the abort and retry
     assert {started for started in contexts if started is not None} == {6_000_000_000}
     assert contexts[-1] is None  # cleared once the drone is back in IDLE
+
+
+# How each demo ends (README "MissionStatus"): back on the pad is "completed", ABORT or
+# EMERGENCY_LAND is "failed", and still mid-mission when time runs out is "interrupted"
+EXPECTED_OUTCOMES = {
+    "full_cycle": "completed",
+    "docking_retry": "completed",
+    "emergency": "failed",
+    "blocked_dock": "interrupted",
+    "not_aligned": "completed",
+    "cart_during_descent": "completed",
+    "comm_loss": "failed",
+}
+
+TIME_FIELDS = ["state_entered_ns", "bird_absent_since_ns", "hover_started_ns", "return_started_ns"]
+
+
+@pytest.mark.parametrize("name", sorted(DEMOS))
+def test_each_tick_has_a_mission_status(name):
+    # One MissionStatus per tick that follows the README's validation rules,
+    # and the last one has the demo's outcome
+    assert set(EXPECTED_OUTCOMES) == set(DEMOS)  # a new demo needs an expected outcome
+    scenario, duration_ms = DEMOS[name]
+    statuses = run_world(duration_ms, scenario=scenario)["statuses"]
+    assert len(statuses) == duration_ms // 100  # 100 ms per tick
+
+    previous_state = State.IDLE
+    latched_return = None
+    for tick, status in enumerate(statuses):
+        assert status.tick == tick
+        assert status.timestamp_ns == tick * 100_000_000
+        assert status.previous_state == previous_state
+
+        # A reason exactly when the state changed, and the entry time is that tick
+        changed = status.state != status.previous_state
+        assert (status.reason is not None) == changed
+        assert status.state_entered_ns <= status.timestamp_ns
+        if changed:
+            assert status.state_entered_ns == status.timestamp_ns
+
+        if status.state != State.HOVERING:
+            assert status.launch_phase == "none"
+            assert status.hover_started_ns is None
+
+        for field in TIME_FIELDS:
+            value = getattr(status, field)
+            assert value is None or 0 <= value <= status.timestamp_ns, field
+
+        # The return latch: set together with its reason, unchanged until IDLE, where both are cleared
+        assert (status.return_started_ns is None) == (status.return_reason is None)
+        if status.state == State.IDLE:
+            assert status.return_started_ns is None
+        elif latched_return is not None:
+            assert status.return_started_ns == latched_return
+        latched_return = status.return_started_ns
+
+        json.dumps(status.to_dict())  # it can be written to a JSON log
+        previous_state = status.state
+
+    for status in statuses[:-1]:
+        assert status.outcome is None
+    assert statuses[-1].outcome == EXPECTED_OUTCOMES[name]
+
+
+def test_launch_phase_reaches_complete():
+    # The bird leaves right after the launch, so the mission stays in HOVERING for the whole climb:
+    # launch_phase goes none -> climbing -> complete, then back to none once the mission leaves HOVERING.
+    # (The demos reach "complete" once step() waits for the climb; contract section 7, not implemented yet.)
+    scenario = [(1000, {"bird": BIRD_SEEN}), (1100, {"bird": BIRD_GONE})]
+    statuses = run_world(4500, scenario=scenario)["statuses"]
+
+    phases = []  # (state, launch_phase) each time either one changes
+    for status in statuses:
+        if not phases or phases[-1] != (status.state, status.launch_phase):
+            phases.append((status.state, status.launch_phase))
+    assert phases == [
+        (State.IDLE, "none"),
+        (State.HOVERING, "climbing"),
+        (State.HOVERING, "complete"),
+        (State.DOCKING_INIT, "none"),
+        (State.DOCKING_APPROACH, "none"),
+    ]

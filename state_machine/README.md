@@ -24,14 +24,14 @@ Phase 0 is purely synthetic: all inputs are generated values, not sensor or simu
 These names are part of the Phase 0 → Phase 1 interface contract and must not change without team agreement.
 
 - `IDLE` and `DOCKED` are both on the dock. `DOCKED` means just landed with the battery not yet recovered; it becomes `IDLE` once the battery has recovered and Motion's feedback shows the drone disarmed and grounded at the pad.
-- There is no separate takeoff state: `HOVERING` includes the launch ([integration contract](../INTEGRATION_README.md) section 2). A launch goes `IDLE → HOVERING → TRACKING`. Holding `TRACKING` back until the climb finishes needs a launch-progress input that the team has not agreed yet.
+- There is no separate takeoff state: `HOVERING` includes the launch ([integration contract](../INTEGRATION_README.md) section 2). A launch goes `IDLE → HOVERING → TRACKING`. `MissionStatus` now reports the launch progress (`launch_phase`, see "MissionStatus"), but `step()` does not use it yet, so `TRACKING` can still begin during the climb.
 - In Phase 0, "the dock" is a stationary pad in simulation. The golf-cart dock is the long-term product (see [Start Here](../START_HERE.md)).
 - The Motion command for each state is chosen by `wanted_command()` in `run_loop.py`. The mapping is a proposal and needs agreement with the Motion team. Command names are Motion's `MotionCommandType` ([`motion_engine/contracts.py`](../motion_engine/contracts.py)). The state machine only chooses the state; the loop issues the command.
 
 ## Inputs and outputs
 
 - Input: the current state and one observation per tick (see the observation format below).
-- Output: the next state and a transition reason, written to the observation's `state` field and to the log.
+- Output: the next state and a transition reason. `run_loop.py` records them every tick in a `MissionStatus`, with the rest of the mission's status (see "MissionStatus"), and logs each transition.
 - The state machine reads Docking's `should_dock`, `phase` and `landed_on_pad`; it does not re-evaluate docking triggers itself. Likewise, it reads the Safety layer's decisions (`permissions`, `emergency`, `abort` and `battery_recovered`) rather than re-deriving safety rules, so it never checks whether the dock is clear itself.
 - Those decisions are worked out every tick by Safety's `assess()` and Docking's controller, which `run_loop.py` calls before `step()` (see "Safety integration" and "Docking integration" below).
 
@@ -203,7 +203,7 @@ Every command then passes through `check_for_motion()` ([`motion_engine/safety_a
 
 1. It updates two timers that Docking needs but does not own:
    - `bird_absent`: when the bird went missing. Set on the first tick with a valid sample and no bird, cleared when the bird is seen.
-   - `hover_started`: when ordinary hovering began. Set on the first tick in `HOVERING` after the launch climb, cleared in any other state.
+   - `hover_started`: when ordinary hovering began. Set on the tick the mission is in `HOVERING` with the launch climb finished, cleared on the tick it leaves `HOVERING`. It is updated after `step()`, so Docking reads the value from the end of the previous tick.
 2. It builds a `DockingInput` from the snapshot (mission state, Motion's feedback, the pad, Safety's assessment, alignment, cart, bird and the two timers). The alignment errors are the pad's pose minus the drone's, because both are known exactly in the synthetic world.
 3. It calls `update(inputs, now_ns)` and puts `to_dict()` in `snapshot["docking"]`, where `step()` reads `should_dock`, `phase` and `landed_on_pad`.
 
@@ -235,14 +235,109 @@ Not connected yet:
 - The bird is still scripted by the demo scenarios; CV is not connected yet.
 - The 60 s return deadline does not fire yet (see "Safety integration"), so a drone that can never line up with the pad keeps retrying until the run ends.
 
+## MissionStatus
+
+`MissionStatus` ([`contracts.py`](contracts.py)) is the state machine's output: one record per tick saying what the mission is doing and why. It is the mission status: "current state, transition reason, completion or failure" and the coordinator's `context` in the [integration contract](../INTEGRATION_README.md) section 4. Motion's `VehicleFeedback` describes the drone; `MissionStatus` describes the mission.
+
+This is a draft. Field names marked "Proposal" need team agreement.
+
+### Purpose
+
+Give every module, the log and the tests the mission's status in one defined format: the state and why it changed, plus the mission's own context (launch progress, timers, the return latch, command failures and how the run ended).
+
+### Fields
+
+| Field | Type | Meaning | Name from |
+|---|---|---|---|
+| `timestamp_ns` | int | Simulation time of this tick | Contract section 4 |
+| `tick` | int | Tick number, starting at 0 | Proposal |
+| `previous_state` | `State` | Mission state at the start of the tick | Proposal |
+| `state` | `State` | Mission state after `step()` | Proposal |
+| `reason` | str or null | Why the state changed (`step()`'s reason); null when it did not change | Proposal |
+| `state_entered_ns` | int | When the current state was entered | Proposal |
+| `launch_phase` | str | `none`, `climbing` or `complete` (see below) | Values from contract section 2; field name is a proposal |
+| `flight_active` | bool | Whether the drone is armed or airborne after this tick's move | The same flag Safety gets as `context.flight_active` on the next tick |
+| `bird_absent_since_ns` | int or null | First tick of the current bird absence; null while the bird is seen | Docking's `DockingInput` |
+| `hover_started_ns` | int or null | When ordinary hovering began (not the launch climb); null outside it | Docking's `DockingInput` |
+| `return_started_ns` | int or null | The return latch: when the first return began. Kept through aborts and retries, cleared in `IDLE` | Same as `context.return_started_ns` (a proposal) |
+| `return_reason` | str or null | Why the return started: Docking's first return reason (for example `low_battery`), or `step()`'s reason if Docking gave none | Proposal |
+| `pending_command_failure` | str or null | Motion's reason when it rejected this tick's command | Proposal |
+| `outcome` | str or null | Last tick only: `completed`, `interrupted` or `failed` (see below); null on every other tick | Values from contract section 10; the rule is a proposal |
+| `schema_version` | int | Always 1 | Contract section 4 |
+| `clock` | str | Always `"simulation"` | Contract section 4 |
+| `synthetic` | bool | Always true | Contract section 4 |
+
+`launch_phase` is `climbing` from the launch until the takeoff reaches its 5 m altitude, then `complete` until the mission leaves `HOVERING`. Everything else is `none`, including an ordinary hover after the bird is lost.
+
+The demos reach `complete` once `step()` waits for the climb before `TRACKING` ([integration contract](../INTEGRATION_README.md) section 7, not implemented yet). Until then, `test_launch_phase_reaches_complete` covers it with a launch where the bird leaves straight away, so the mission stays in `HOVERING` for the whole climb.
+
+`outcome` (proposal): back on the pad (`IDLE` or `DOCKED`) is `completed`, `ABORT` or `EMERGENCY_LAND` is `failed`, and any other state means time ran out mid-mission, so `interrupted`. In the demos, `blocked_dock` is `interrupted`, `emergency` and `comm_loss` are `failed`, and the rest are `completed`.
+
+### Units
+
+- All times are integer nanoseconds on the simulation clock, starting at 0 (`clock = "simulation"`). Wall time is never used.
+- `to_dict()` writes `state` and `previous_state` as uppercase strings (`"HOVERING"`, contract section 2). `launch_phase` and `outcome` are lowercase strings. Unset values are null.
+
+### Update rate
+
+10 Hz: one status per 0.1 s tick, so a 10 s demo produces 100 statuses (`tick` 0 to 99).
+
+### Validation rules
+
+Every status follows these rules in all seven demos; `test_each_tick_has_a_mission_status` checks them on every tick. The class itself does not check them.
+
+- `timestamp_ns` equals `tick` × 100 ms.
+- `previous_state` equals the previous tick's `state` (`IDLE` on tick 0).
+- `reason` is set exactly when `state` differs from `previous_state`.
+- `state_entered_ns` is no later than `timestamp_ns`, and equals it on a tick where the state changed.
+- `launch_phase` is `none` outside `HOVERING`.
+- `hover_started_ns` is null outside `HOVERING`.
+- Every time field is null or between 0 and `timestamp_ns`.
+- `return_started_ns` and `return_reason` are set together. Once set, `return_started_ns` does not change until `IDLE`, where both are null.
+- `outcome` is null on every tick except the last.
+
+### Example payload
+
+Tick 50 of `full_cycle` (5000 ms): the battery is low and the cart is moving, so the mission commits to returning home.
+
+```json
+{
+  "timestamp_ns": 5000000000,
+  "tick": 50,
+  "previous_state": "HOVERING",
+  "state": "DOCKING_INIT",
+  "reason": "Should dock",
+  "state_entered_ns": 5000000000,
+  "launch_phase": "none",
+  "flight_active": true,
+  "bird_absent_since_ns": 4000000000,
+  "hover_started_ns": null,
+  "return_started_ns": 5000000000,
+  "return_reason": "low_battery",
+  "pending_command_failure": null,
+  "outcome": null,
+  "schema_version": 1,
+  "clock": "simulation",
+  "synthetic": true
+}
+```
+
+### Open questions
+
+- `arming`: the contract lists it as a launch phase, but `launch_drone()` sends `ARM` and `TAKEOFF` on the same tick, so a launch goes straight to `climbing`. Keep `arming` for a Motion that arms first, or drop it?
+- `outcome`: is the rule above right? For example, should an emergency landing that worked count as `failed`?
+- `reason`: the contract asks for stable codes such as `bird_lost` (section 4), but `step()` returns sentences such as "Bird not detected". Switch to codes and keep the sentence as separate detail?
+- `return_reason`: one reason, or all of Docking's reasons (for example `low_battery` and `cart_moving` together)?
+
 ## Running
 
 Code lives in this folder:
 
 - `state_machine.py`: the `State` enum and `step()`.
-- `run_loop.py`: the 10 Hz synthetic loop. It runs a scripted demo through `step()` and sends the matching commands to Motion.
+- `run_loop.py`: the 10 Hz synthetic loop. It runs a scripted demo through `step()`, sends the matching commands to Motion, and builds a `MissionStatus` every tick.
+- `contracts.py`: `MissionStatus`, the mission's status for one tick (see "MissionStatus").
 - `demos.py`: the scripted demo scenarios. They script facts about the world (bird, battery, cart, people, comms, pad alignment), not Safety's or Docking's answers.
-- `tests/`: unit tests for `step()`, and one end-to-end test per demo.
+- `tests/`: unit tests for `step()`, one end-to-end test per demo, and tests of the `MissionStatus` records (the validation rules on every demo, and the launch phase).
 
 Run a demo from the repo root:
 
@@ -279,3 +374,4 @@ The tests call `run_world()` without real-time pacing or logging, so they finish
 - `transitions`: `(time_ms, from_state, to_state, reason)` for each state change.
 - `commands`: `(time_ms, kind, accepted, reason)` for each new command sent to Motion. A renewed command is listed once.
 - `vehicle`: Motion's feedback after the last tick (`grounded`, `armed`, `airborne`, `pose`, …).
+- `statuses`: one `MissionStatus` per tick (see "MissionStatus").
