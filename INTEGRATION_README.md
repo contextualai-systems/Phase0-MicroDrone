@@ -262,6 +262,11 @@ See the [CV roadmap](cv/README.md#phase-0-perception-roadmap) for planned image-
 perception, detection contracts, and benchmarks. The tasks below cover the current
 synthetic mission-loop adapter.
 
+The optional [PerceptionUpdate contract](cv/README.md#coordinator-facing-perceptionupdate)
+now publishes actual detections and separate retained track states. Its field
+producers and [required downstream changes](cv/README.md#required-downstream-changes-not-implemented-here)
+are documented in the CV README; coordinator wiring is not yet implemented.
+
 - Return valid detection, valid absence, and unavailable input distinctly through the existing observation interface.
 - Preserve camera/source identity and original fixture timestamps; support the coordinator's explicit clock mapping.
 - Keep bird observations separate from independent synthetic alignment inputs.
