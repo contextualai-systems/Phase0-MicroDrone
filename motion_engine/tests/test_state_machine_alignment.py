@@ -44,9 +44,9 @@ class RecordedMotion:
     """Stands in for the `MotionStub` that run_world() builds, so every tick,
     every command and every log line is recorded for checking."""
 
-    def __init__(self, clock):
+    def __init__(self, clock, limits=None):
         self.log = MemoryLogSink()
-        self.stub = MotionStub(logger=self.log, clock=clock)
+        self.stub = MotionStub(logger=self.log, clock=clock, limits=limits)
         self.rec = TraceRecorder(self.stub)
         self.rec.snapshot(clock.timestamp_ns)
         self.sent = []       # every Command submitted, renewals included
@@ -70,8 +70,8 @@ def run_demo(monkeypatch):
     def run(name):
         made = []
 
-        def factory(*args, clock=None, **kwargs):
-            made.append(RecordedMotion(clock))
+        def factory(*args, clock=None, limits=None, **kwargs):
+            made.append(RecordedMotion(clock, limits))
             return made[-1]
 
         monkeypatch.setattr(run_loop, "MotionStub", factory)

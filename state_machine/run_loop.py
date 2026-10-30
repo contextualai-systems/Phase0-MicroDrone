@@ -11,7 +11,7 @@ from safety_layer.safety_policy import assess
 from state_machine.state_machine import State, step
 from universal_log.Universal_log import UniversalLog
 from motion_engine.contracts import Command, MotionCommandType, Pose, SimulationClock
-from motion_engine.motion_stubs import MotionStub
+from motion_engine.motion_stubs import MotionLimits, MotionStub
 from motion_engine.safety_adapter import check_for_motion
 
 
@@ -165,7 +165,8 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
     world = init_world()
     currState = State.IDLE
     clock = SimulationClock()
-    motion = MotionStub(clock=clock)
+    # Same limits Safety uses (safety_layer/config.py), not MotionStub's defaults
+    motion = MotionStub(clock=clock, limits=MotionLimits.from_config())
     docking = DockingController()
     launches = 0
     bird_absent = None
