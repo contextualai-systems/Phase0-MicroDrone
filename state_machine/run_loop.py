@@ -67,8 +67,11 @@ def launch_drone(motion, clock, state, reason, launch_number, assessment):
 
 # True while the takeoff climb is still going. Sending any other command during
 # the climb replaces the takeoff and leaves the drone stuck near the ground.
+# It waits for the full takeoff altitude, not Motion's 0.25 m arrival tolerance:
+# a HOVER sent inside that tolerance would hold the drone at about 4.8 m.
 def still_climbing(vehicle) -> bool:
-    return vehicle.active_kind == MotionCommandType.TAKEOFF and not vehicle.arrived
+    return (vehicle.active_kind == MotionCommandType.TAKEOFF
+            and vehicle.target is not None and vehicle.pose.z < vehicle.target.z)
 
 
 # Launch progress for MissionStatus (INTEGRATION_README.md section 2): "none" outside a launch,
@@ -203,6 +206,7 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
         snapshot["context"] = {
             "flight_active": vehicle.airborne or vehicle.armed,
             "return_started_ns": return_started,  # for Safety's 60 s return deadline
+            "launch_phase": current_launch_phase(launching, vehicle),  # so step() waits for the climb
         }
         assessment = assess(snapshot, now_ns)
         snapshot["safety"] = dataclasses.asdict(assessment)

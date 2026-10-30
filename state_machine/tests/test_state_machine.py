@@ -123,6 +123,25 @@ def test_hovering_to_tracking():
     observation = make_observation(bird={"detected": True})
     assert step(State.HOVERING, observation) == (State.TRACKING, "Bird detected")
 
+def test_tracking_waits_for_the_launch_climb():
+    # Tracking only starts once the climb has finished (INTEGRATION_README.md section 7)
+    observation = make_observation(bird={"detected": True})
+    observation["context"] = {"launch_phase": "climbing"}
+    assert step(State.HOVERING, observation) == (State.HOVERING, None)
+
+    observation["context"] = {"launch_phase": "complete"}
+    assert step(State.HOVERING, observation) == (State.TRACKING, "Bird detected")
+
+    # An ordinary hold (not a launch) can go back to tracking straight away
+    observation["context"] = {"launch_phase": "none"}
+    assert step(State.HOVERING, observation) == (State.TRACKING, "Bird detected")
+
+def test_return_request_during_the_climb_still_docks():
+    # A return request doesn't wait for the climb: it cancels the rest of it
+    observation = make_observation(bird={"detected": True}, docking=docking_with(should_dock=True))
+    observation["context"] = {"launch_phase": "climbing"}
+    assert step(State.HOVERING, observation)[0] == State.DOCKING_INIT
+
 def test_docked_to_idle_when_battery_recovered():
     # Safety decides when the battery has recovered, not the state machine
     recovered = make_observation(battery={"percent": 100}, safety=safety_with(battery_recovered=True))
@@ -287,20 +306,31 @@ def test_demo_end_to_end(name):
     assert vehicle.grounded == expected["grounded"]
     assert vehicle.armed == expected["armed"]
 
+@pytest.mark.parametrize("name", sorted(DEMOS))
+def test_demos_track_only_after_the_climb(name):
+    # In every demo, the tick before TRACKING starts shows the launch climb complete
+    scenario, duration_ms = DEMOS[name]
+    statuses = run_world(duration_ms, scenario=scenario)["statuses"]
+    starts = [tick for tick, status in enumerate(statuses)
+              if status.state == State.TRACKING and status.previous_state != State.TRACKING]
+    assert starts, "the demo should track the bird"
+    for tick in starts:
+        assert statuses[tick - 1].launch_phase == "complete"
+
 def test_descent_waits_until_aligned():
-    # Docking hovers above the pad until the alignment becomes valid at 8000 ms,
+    # Docking hovers above the pad until the alignment becomes valid at 9000 ms,
     # aligns on that tick and starts the descent on the next one
     scenario, duration_ms = DEMOS["not_aligned"]
     commands = run_world(duration_ms, scenario=scenario)["commands"]
     descents = [time_ms for time_ms, kind, _, _ in commands if kind == "DESCEND_TO_DOCK"]
-    assert descents == [8100]
+    assert descents == [9100]
 
 def test_cart_moving_stops_descent_on_the_same_tick():
-    # The cart starts moving at 7000 ms, during the descent; the descent is replaced by STOP in that
+    # The cart starts moving at 8000 ms, during the descent; the descent is replaced by STOP in that
     # same tick, before Motion moves the drone (INTEGRATION_README.md section 11)
     scenario, duration_ms = DEMOS["cart_during_descent"]
     commands = run_world(duration_ms, scenario=scenario)["commands"]
-    assert (7000, "STOP") in [(time_ms, kind) for time_ms, kind, _, _ in commands]
+    assert (8000, "STOP") in [(time_ms, kind) for time_ms, kind, _, _ in commands]
 
 def test_return_start_time_survives_abort_and_retry(monkeypatch):
     # The loop gives Safety the time the return started (context return_started_ns), for the 60 s
@@ -316,8 +346,8 @@ def test_return_start_time_survives_abort_and_retry(monkeypatch):
     transitions = run_world(duration_ms, scenario=scenario)["transitions"]
     assert State.ABORT in [new for _, _, new, _ in transitions]  # the retry really happens
 
-    # One start time, from the first DOCKING_INIT at 6000 ms, kept through the abort and retry
-    assert {started for started in contexts if started is not None} == {6_000_000_000}
+    # One start time, from the first DOCKING_INIT at 7000 ms, kept through the abort and retry
+    assert {started for started in contexts if started is not None} == {7_000_000_000}
     assert contexts[-1] is None  # cleared once the drone is back in IDLE
 
 
@@ -386,7 +416,6 @@ def test_each_tick_has_a_mission_status(name):
 def test_launch_phase_reaches_complete():
     # The bird leaves right after the launch, so the mission stays in HOVERING for the whole climb:
     # launch_phase goes none -> climbing -> complete, then back to none once the mission leaves HOVERING.
-    # (The demos reach "complete" once step() waits for the climb; contract section 7, not implemented yet.)
     scenario = [(1000, {"bird": BIRD_SEEN}), (1100, {"bird": BIRD_GONE})]
     statuses = run_world(4500, scenario=scenario)["statuses"]
 

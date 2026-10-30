@@ -59,9 +59,12 @@ def step(state: State, observation: dict) -> tuple[State, str | None]:
     bird = observation.get("bird") or {}
     safety = observation.get("safety") or {}
     docking = observation.get("docking") or {}
+    context = observation.get("context") or {}
 
     bird_seen = bird.get("detected") is True
     should_dock = docking.get("should_dock") is True
+    # The launch climb is still going (run_loop.py reports it in context.launch_phase)
+    climbing = context.get("launch_phase") == "climbing"
 
     # Global rules are checked before the per-state rules, and emergency wins over abort
     # An emergency on the ground only blocks launch.
@@ -87,10 +90,11 @@ def step(state: State, observation: dict) -> tuple[State, str | None]:
                 return State.HOVERING, "Bird not detected"
 
         # Hovering state
+        # Tracking waits until the launch climb has finished (INTEGRATION_README.md section 7)
         case State.HOVERING:
             if should_dock:
                 return State.DOCKING_INIT, "Should dock"
-            if bird_seen and is_permitted(safety, "tracking"):
+            if bird_seen and is_permitted(safety, "tracking") and not climbing:
                 return State.TRACKING, "Bird detected"
 
         # Docking initialization state
