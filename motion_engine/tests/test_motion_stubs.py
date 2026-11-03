@@ -272,7 +272,7 @@ def test_unclamped_command_has_no_clamp_decision(motion, logger):
         lambda m: m.stop(),
         lambda m: m.set_yaw(90.0),
         lambda m: m.set_orientation(0.0, 0.0, 90.0),
-        lambda m: m.track_target(0.0, 40.0),
+        lambda m: m.track_position(1.0, 2.0, 3.0),
         lambda m: m.goto_dock_approach(Pose(0, 0, 0, 0)),
         lambda m: m.descend_to_dock(Pose(0, 0, 0, 0)),
         lambda m: m.land(),
@@ -312,29 +312,19 @@ def test_history_and_active_command(motion, clock):
 # -- mission-shaped commands ------------------------------------------------------
 
 
-def test_track_target_standoff_geometry(motion, clock, logger):
+def test_track_position_flies_the_given_pose(motion, clock, logger):
+    """Motion follows whatever pose Navigation computed; it does no bird geometry."""
     airborne_at(motion, clock, 12.0)
-    assert motion.track_target(bearing_deg=0.0, distance_m=40.0, standoff_m=15.0)
-    t = motion.target
-    assert (t.x, t.y, t.z, t.yaw_deg) == pytest.approx((25.0, 0.0, 12.0, 0.0))
-    rec = motion_records(logger, "track_target")[-1]
-    assert rec.decision == "close_to_standoff"
-
-
-def test_track_target_bearing_north_faces_bird_and_altitude(motion, clock):
-    airborne_at(motion, clock, 12.0)
-    motion.track_target(bearing_deg=90.0, distance_m=30.0, standoff_m=10.0, altitude_m=15.0)
-    t = motion.target
-    assert (t.x, t.y, t.z, t.yaw_deg) == pytest.approx((0.0, 20.0, 15.0, 90.0), abs=1e-9)
+    assert motion.track_position(25.0, 0.0, 12.0, yaw_deg=0.0)
+    assert motion.target == Pose(25.0, 0.0, 12.0, 0.0)
+    assert motion.active_command.type == MotionCommandType.TRACK_TARGET
     settle(motion, clock)
-    assert motion.pose.yaw_deg == pytest.approx(90.0)
+    assert motion.pose == Pose(25.0, 0.0, 12.0, 0.0)
 
 
-def test_track_target_backs_off_when_too_close(motion, clock, logger):
-    airborne_at(motion, clock, 12.0)
-    motion.track_target(bearing_deg=0.0, distance_m=5.0, standoff_m=15.0)
-    assert motion.target.x == pytest.approx(-10.0)
-    assert motion_records(logger, "track_target")[-1].decision == "back_off_to_standoff"
+def test_motion_has_no_bird_geometry_api(motion):
+    """Bearing/distance/standoff belong to Navigation, not Motion."""
+    assert not hasattr(motion, "track_target")
 
 
 def test_dock_approach_then_descend_reaches_dock(motion, clock):
@@ -456,7 +446,7 @@ def test_every_accepted_command_logs_one_motion_record(motion, clock, logger):
         lambda: motion.move_to(5.0, 5.0, 10.0),
         lambda: motion.set_yaw(90.0),
         lambda: motion.set_orientation(0.0, 0.0, 180.0),
-        lambda: motion.track_target(0.0, 40.0),
+        lambda: motion.track_position(5.0, 5.0, 10.0),
         lambda: motion.hover(),
         lambda: motion.stop(),
         lambda: motion.goto_dock_approach(Pose(0, 0, 0, 0)),
@@ -502,7 +492,7 @@ def test_every_public_command_has_phase1_hook():
     names = {m.name for m in methods}
     expected = {
         "arm", "disarm", "takeoff", "move_to", "hover", "stop", "set_yaw",
-        "set_orientation", "track_target", "goto_dock_approach", "descend_to_dock",
+        "set_orientation", "goto_dock_approach", "descend_to_dock",
         "land", "emergency_land", "step",
         "submit", "feedback", "track_position",
     }
@@ -524,14 +514,14 @@ def test_position_hooks_mention_ned_conversion():
         n.name: "\n".join(lines[n.lineno - 1:n.end_lineno])
         for n in cls.body if isinstance(n, ast.FunctionDef)
     }
-    for name in ("move_to", "track_target", "goto_dock_approach", "step"):
+    for name in ("move_to", "track_position", "goto_dock_approach", "step"):
         assert "NED" in bodies[name], name
     for name, cmd in {
         "arm": "MAV_CMD_COMPONENT_ARM_DISARM",
         "disarm": "MAV_CMD_COMPONENT_ARM_DISARM",
         "takeoff": "MAV_CMD_NAV_TAKEOFF",
         "move_to": "SET_POSITION_TARGET_LOCAL_NED",
-        "track_target": "/fmu/in/trajectory_setpoint",
+        "track_position": "/fmu/in/trajectory_setpoint",
         "goto_dock_approach": "SET_POSITION_TARGET_LOCAL_NED",
         "hover": "MAV_CMD_NAV_LOITER_UNLIM",
         "stop": "MAV_CMD_NAV_LOITER_UNLIM",
