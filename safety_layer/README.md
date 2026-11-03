@@ -30,7 +30,9 @@ old target. These run at steps 3 and 7 of each tick.
 First level that applies wins:
 
 1. **Emergency** — airborne with critical battery, unknown position/battery,
-   lost signal, or bad weather → land in place, replace any order.
+   lost signal, bad weather, or a trip home that has run 60 s or more
+   (`context.return_started_ns`, kept through retries) → land in place,
+   replace any order.
 2. **Abort** — operator stop or rejected command → cancel target; hold still allowed.
 3. **Restrictions** — block only what the hazard affects:
 
@@ -72,6 +74,7 @@ whether to return; Safety decides whether returning is permitted.
 - **Field names unconfirmed** — taken from Integration README Section 4; the
   shared contracts module doesn't exist. Wrong names mean `assess()` reads empty
   sections and blocks everything. Needs the state machine team to confirm.
-- Timers (launch, docking, 60 s return deadline) need coordinator-tracked time.
+- Launch and docking timeouts need coordinator-tracked time. (The 60 s return
+  deadline is done.)
 - Logging not wired up; weather strings are a guess; `Command` is provisional,
   since Motion already has `MotionCommand` with different fields.
