@@ -170,7 +170,8 @@ empty images have an empty list. Detection without pose remains valid.
 
 The default dictionary is `DICT_4X4_50`; IDs use `aruco:<numeric_dictionary>:<id>`.
 All detected markers currently share the configured physical side length.
-Confidence and tracking IDs remain null. Pose uses iterative planar PnP with
+Confidence and tracking IDs remain null in the raw pipeline output. The optional
+shared publisher below supplies track IDs. Pose uses iterative planar PnP with
 positive-depth and reprojection checks (default maximum RMS error: 3 pixels).
 This is a clean-scene baseline: planar pose ambiguity is not resolved using
 temporal information, and a low reprojection error does not guarantee accurate
@@ -193,7 +194,7 @@ and total processing, excluding final logging overhead. The optional publisher
 receives processing timings; its duration is known only afterward and appears in
 the returned observation and log. Callback/logging exceptions propagate to the
 caller. The offline benchmark below supplies run manifests and aggregate latency
-reports. Persistent tracking remains future work.
+reports. The shared publisher below adds persistent ArUco identity and lifecycle.
 
 ## Synthetic benchmark and replay
 
@@ -260,36 +261,206 @@ tracking-stage timing is claimed. Timing is machine/load-dependent and not
 expected to reproduce exactly; accuracy replay is tested with the same software.
 
 This benchmark changes no DetectionResult fields, tracking semantics, mission
-states, Motion APIs, or coordinator behavior. Shared message/ENU integration and
-retained-versus-predicted tracking semantics remain on hold pending agreement.
+states, Motion APIs, or coordinator behavior. It benchmarks raw perception;
+tracking has its own validation suite and diagnostic replay below.
 
-### Shared DetectionResult integration status
+## Coordinator-facing PerceptionUpdate
 
-The current `DetectionResult` class is an internal camera-relative detection,
-not yet the finalized shared system message. `CVObservation.to_dict()` supplies
-`valid`, `reason`, and `source_id` at frame level. `pose_valid`/`pose_reason` are
-separate: a valid image detection does not imply a usable metric pose.
+**Purpose:** distinguish actual camera measurements from persistent track state.
+**Publisher:** `cv.perception_publisher.PerceptionPublisher`, a CV-owned local
+adapter. **Subscribers:** the coordinator and, through explicit routing, Docking,
+Safety, and future Navigation/autonomy. Motion still receives approved commands.
+**Rate:** one `update()` per consumed frame, plus optional coordinator-tick
+heartbeats with no image. There is no background loop, ROS dependency, or command
+dispatch. Existing `ComputerVision` bird fixtures and raw `PerceptionPipeline`
+outputs are unchanged.
 
-The shared-message adapter remains to be implemented:
+```python
+from cv.perception_publisher import PerceptionPublisher
+from cv.shared_perception import CameraToENU
 
-- Publish integer simulation `timestamp_ns` using the explicit clock mapping,
-  retaining original source time. Current generic output keeps source time at
-  top level and optional simulation time under `mapped_time`.
-- Transform position and orientation from camera optical coordinates to local
-  ENU using calibrated camera extrinsics and capture-time vehicle pose (or a
-  known camera-to-world transform). Publish yaw in degrees, zero east and
-  counterclockwise positive. Do not relabel the existing camera coordinates.
-- Map internal `type` and envelope `camera_id` to shared `object_type` and
-  `source_camera` if these exact names are required, preserving the internal API.
-- Include timestamp, camera/source identity, and validity/reason in the agreed
-  shared envelope or each standalone object message; define missing-transform
-  behavior explicitly. Never substitute zero position for unavailable geometry.
+# Construct once per camera/source session. pipeline is a PerceptionPipeline
+# configured with the coordinator's explicit source-to-simulation timestamp_mapper.
+shared_cv = PerceptionPublisher(
+    publisher=lambda update: coordinator_queue.append(update.to_dict()),
+    log_sink=shared_log_sink,
+    confirmation_hits=2,
+    max_gap_ns=500_000_000,
+)
 
-Confidence and tracking ID fields exist but remain null. Persistent tracking is
-still pending. The shared interface write-up should cover purpose, publisher,
-subscribers, fields, units/frames, rate, validation, and example payloads once
-the adapter contract is agreed. The local publisher callback is not a uXRCE-DDS
-publisher; Phase 1 transport and message/IDL bindings are not implemented here.
+# Called only when the coordinator schedules a new camera sample:
+shared_cv.set_log_context(state=current_state.value)
+observation = pipeline.read()
+update = shared_cv.update(
+    observation,
+    now_ns=clock.timestamp_ns,
+    transform=camera_to_enu_at_capture,  # CameraToENU, or None if unavailable
+)
+
+# Between samples, advance lifecycle without replaying the last observation:
+update = shared_cv.update(now_ns=clock.timestamp_ns)
+```
+
+The snippet defines the integration boundary; `coordinator_queue`, clock,
+capture-time transforms, and scheduling are caller-owned and are not yet wired
+into `run_loop.py`. Use either the callback or the return value as the consumption
+path, not both. The callback gets the update before its own publication duration
+is measurable; the returned/logged update additionally includes that duration.
+
+### Envelope fields and their producers
+
+`PerceptionUpdate.to_dict()` returns JSON-compatible data with these exact keys:
+
+| Field | Meaning / producer |
+| --- | --- |
+| `schema_name`, `schema_version` | CV constants: `perception_update`, `1` |
+| `session_id` | CV-generated unique session plus reset generation; a supplied base ID must be unique per run/stream |
+| `source_id`, `source_camera` | Provider identity from `CVObservation.source_id` / `camera_id` |
+| `clock` | `simulation`; all shared timestamps except explicitly named source time use this clock |
+| `update_timestamp_ns` | Coordinator's integer `now_ns`; when this update is evaluated |
+| `capture_timestamp_ns` | `CVObservation.simulation_timestamp_ns`, produced by the explicit clock mapper |
+| `source_timestamp_ns`, `source_clock` | Original provider time/clock, unchanged |
+| `frame_index` | Provider frame number |
+| `synthetic` | Provider provenance; recorded-video pixels are not automatically synthetic |
+| `sample_received` | True for a new observation; false for a heartbeat |
+| `frame_valid` | Image availability from `camera_ok`; null on heartbeats |
+| `valid` | New frame successfully processed; false for failure or heartbeat; not a pose/freshness permission |
+| `reason` | Source/processing failure reason, `no_new_frame`, or null |
+| `processing_status` | `ok`, `unavailable`, `error`, or `no_new_frame` |
+| `detections` | Actual new detections only; always a list in the shared format |
+| `tracks` | Full current camera/session track snapshot, plus one-update expiration records |
+| `timings_ns` | Adapter/validation/transformation, tracking, and local publication durations; raw detector timings remain in the pipeline log |
+
+On heartbeats, capture/source timestamps and frame index identify the last
+received sample; they are not refreshed. `sample_received=false` makes this
+explicit. A first sample is required before sending heartbeats. Missing frames
+can be that first sample. EOF remains the provider's `StopIteration`, not a
+fabricated missing image; the coordinator decides whether to stop or age tracks.
+
+### Each `detections[]` entry
+
+Internally this is `SharedDetectionResult`. Its `to_dict()` flattens its `WorldPose`:
+
+| Fields | Meaning / producer |
+| --- | --- |
+| `timestamp_ns`, `clock` | Mapped image capture time, `simulation`; never publication time |
+| `source_timestamp_ns`, `source_clock`, `source_id`, `source_camera` | Copied frame provenance so a detection can be inspected independently |
+| `object_id`, `object_type` | Detector identity/type; internal `type` maps to shared `object_type` |
+| `confidence`, `confidence_method` | Detector score/method; currently null, not a fabricated probability |
+| `corners_px` | Four measured image corners in decoded marker order |
+| `tracking_id`, `association_reason` | Tracker association; null ID for ambiguous, stale, or unsupported-type observations, with a reason |
+| `valid`, `reason` | Actual image detection is valid; pose validity is independent |
+| `position_x`, `position_y`, `position_z` | Marker-center ENU metres, or all null |
+| `orientation` | Quaternion object `{x,y,z,w}` rotating marker-local vectors into ENU, or null |
+| `yaw_deg` | Heading of marker +X projected onto ENU XY, zero east and CCW positive, in [0,360); null if that axis is vertical or pose unavailable |
+| `pose_valid`, `pose_reason` | Whether world pose is available; e.g. `transform_unavailable`, `transform_time_mismatch`, `transform_camera_mismatch`, or source pose failure |
+| `frame`, `origin_id`, `transform_id` | `local_enu` and the supplied transform's named origin/identity; identities null when pose unavailable |
+
+`CameraToENU(source_camera, timestamp_ns, origin_id, translation_m, orientation,
+transform_id)` must match the camera and exact mapped capture timestamp. It
+implements `p_enu = R_camera_to_enu * p_camera + translation_m`. The coordinator
+supplies the calibrated camera mounting transform composed with capture-time
+vehicle attitude/position, or a known fixed camera-to-world transform. A latest
+vehicle pose is not interchangeable with capture-time pose. Quaternion and
+translation validation reject malformed/nonfinite input. No transform means
+valid detection/identity but null shared pose, never relabeled camera geometry.
+
+### Each `tracks[]` entry
+
+| Fields | Meaning / producer |
+| --- | --- |
+| `tracking_id` | CV session/generation + monotonic track instance number |
+| `object_id`, `object_type`, `source_id`, `source_camera` | Associated object's identity/provenance |
+| `status` | `tentative`, `confirmed`, `temporarily_lost`, or `expired` |
+| `estimate_kind` | `measured` or `retained`; `predicted` is reserved but never emitted yet |
+| `last_observed_timestamp_ns` | Latest unambiguous matching detection's capture time |
+| `estimate_timestamp_ns` | Time represented by the stored pose; unchanged during retention, null if pose unavailable |
+| `hits` | Total associated, distinct observed samples; heartbeats/duplicates do not increment it |
+| `confidence` | Last associated detection's confidence; does not become a track probability |
+| `valid`, `reason` | Active identity versus expired identity; `valid=true` does not imply fresh measurement or usable pose |
+| `velocity_m_s`, `position_covariance_m2` | Reserved nullable XYZ velocity and 3x3 position covariance; both null in the retention estimator |
+| Pose fields | Same flattened ENU fields as above, held at `estimate_timestamp_ns` |
+
+Track timestamps inherit the envelope's simulation clock. On a new associated
+detection with unavailable pose, the track retains its identity but clears world
+geometry; it does not present an older pose as a new measurement. On no matching
+detection it retains the previous pose/time, marked `retained`. Predicted state
+and a Kalman filter are not implemented. `LastMeasurementEstimator.observe()` /
+`advance()` separate estimation from association/lifecycle for later replacement.
+
+Default confirmation is two consecutive unambiguous observed frames. A genuinely
+empty/missing/failed/ambiguous sample breaks the confirmation streak; a heartbeat
+does not. Heartbeats retain the lifecycle status until expiry (no scheduled image
+is not evidence of a missed detection), while marking the estimate `retained`.
+A confirmed track stays confirmed on reacquisition within the gap.
+Expiry occurs when `now_ns - last_observed_timestamp_ns >= 500_000_000` by default.
+It emits `expired, valid=false` once, then disappears; reacquisition gets a new ID.
+Thresholds are configurable CV identity policy, not Safety's freshness policy.
+
+Only ArUco IDs are associated initially; other object types remain untracked.
+Duplicate IDs in a view are ambiguous and update no track. Each publisher owns
+one camera/source stream; there is no cross-camera fusion. Replayed or decreasing
+frame indices, source times, or mapped times are rejected before track mutation.
+Future captures and backwards update times are rejected. Call `reset()` after
+source/clock restart or ENU-origin changes: it logs a reset, clears tracks, and
+changes session generation. Consumers replace their cached track set on a new
+session ID. State names are opaque log context only.
+
+### Runnable coordinator payload examples
+
+```bash
+python -m unittest discover -s tests -p 'test_cv_tracking.py' -v
+python -m cv.tracking_demo --output cv/synthetic_output/tracking_demo
+code cv/synthetic_output/tracking_demo/measured.json
+code cv/synthetic_output/tracking_demo/heartbeat.json
+code cv/synthetic_output/tracking_demo/missing.json
+code cv/synthetic_output/tracking_demo/expired.json
+```
+
+Use a new output directory on subsequent runs. `updates.jsonl` contains full
+coordinator-ready payloads; `events.jsonl` includes raw perception and shared
+publication records. The demonstration uses real pixel detections and an
+explicitly synthetic downward-camera transform, not real drone extrinsics.
+
+| Case | Envelope | Detection list | Track behavior |
+| --- | --- | --- | --- |
+| Marker observed | `valid=true`, `frame_valid=true` | Current detections | Measured, tentative/confirmed |
+| Empty image | `valid=true`, `frame_valid=true` | Empty | Retained or expired |
+| Missing image | `valid=false`, `frame_valid=false` | Empty | Retained or expired |
+| Detector failed | `valid=false`, `frame_valid=true` | Empty | Retained or expired |
+| Heartbeat | `valid=false`, `frame_valid=null`, `sample_received=false` | Empty | Retained or expired |
+
+Malformed adapter inputs raise `ValueError` without changing tracks; the caller
+must handle that failure rather than reuse a previous result as fresh. Callback
+and logger errors propagate. Publication failures are logged when possible, but
+do not roll back accepted measurements; this local callback is not a reliable
+transport or retry queue. ROS2 message/IDL bindings and uXRCE-DDS remain pending.
+
+### Required downstream changes (not implemented here)
+
+- **Coordinator (`state_machine/run_loop.py`):** create one shared publisher per
+  camera/source; supply `State.value`, clock mapping, capture-time transforms,
+  and logger. Schedule raw `read()` only when a sample is due; call `update(None,
+  now_ns=...)` between samples. Remove tick-time restamping for CV-sourced fields
+  in the loop that currently assigns `timestamp_ns=now_ns` to snapshot sections.
+  Keep snapshot tick time separate from measurement time. Queue and consume one
+  update once; preserve source/frame identity and reset cached tracks on session
+  change. Proposed placement is `snapshot['perception'] = update.to_dict()`;
+  this new snapshot section still needs integration-team adoption.
+- **Mission function (`state_machine/state_machine.py`):** preserve all eight
+  state identities. Do not treat an ArUco marker as `bird.detected`. Existing
+  bird fixture inputs remain separate until an explicit consumer adapter exists.
+- **Motion / pose supplier:** provide a capture-time camera-to-ENU transform or
+  the pose history needed to form it. Existing yaw-only vehicle pose suffices
+  only for declared level-attitude synthetic fixtures; arbitrary camera attitude
+  requires full orientation/extrinsics. No change to Motion command/ack APIs is
+  required, and Motion should not consume detections directly.
+- **Docking:** map the designated pad marker and its frame/origin to alignment
+  inputs. Check pose validity and last-observed age; retained identity is not
+  descent permission. Missing transform must yield unavailable alignment.
+- **Safety:** explicitly assess measurement age, estimate kind, pose validity,
+  and track status; do not infer freshness from update time or `track.valid`.
+  Any future allowance for predicted geometry requires a separate policy.
 
 
 ## Phase 0 perception roadmap
@@ -305,8 +476,9 @@ flowchart LR
     A[Camera provider] --> B[Preprocessing]
     B --> C[Detection]
     C --> D[Pose estimation]
-    D --> E[Tracking]
-    E --> F[DetectionResult publisher]
+    D --> X[Capture-time ENU adapter]
+    X --> E[Tracking and retention]
+    E --> F[PerceptionUpdate publisher]
 ```
 
 ### Providers and detection contract
@@ -415,9 +587,10 @@ and stage p50/p95/p99 latency with machine, resolution, and sample counts.
    per-frame logs/timing hooks, and fixture compatibility tests.
 3. **Implemented:** seeded single-marker degradation sweeps, saved-image replay,
    detection/pose benchmarks, run manifests, and aggregate latency reports.
-4. **Remaining:** persistent tracking, multi-object benchmark scenes, and shared
-   detection-versus-track message agreement.
-5. **Remaining:** coordinator scheduling and world-frame adapters, retaining fixture tests.
+4. **Implemented:** camera-local marker tracking, retention/expiry, shared
+   detections and track snapshots, and explicit capture-time ENU transformation.
+5. **Remaining:** coordinator wiring and transform supply, multi-object benchmark
+   scenes, predictive estimation/Kalman filtering, and ROS2 transport bindings.
 
 Acceptance requires the same detector to process synthetic images and recorded
 video, reproducible benchmark reports, and logs explaining failures without drone
