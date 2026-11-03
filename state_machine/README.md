@@ -24,7 +24,7 @@ Phase 0 is purely synthetic: all inputs are generated values, not sensor or simu
 These names are part of the Phase 0 → Phase 1 interface contract and must not change without team agreement.
 
 - `IDLE` and `DOCKED` are both on the dock. `DOCKED` means just landed with the battery not yet recovered; it becomes `IDLE` once the battery has recovered and Motion's feedback shows the drone disarmed and grounded at the pad.
-- There is no separate takeoff state: `HOVERING` includes the launch ([integration contract](../INTEGRATION_README.md) section 2). A launch goes `IDLE → HOVERING → TRACKING`. `MissionStatus` now reports the launch progress (`launch_phase`, see "MissionStatus"), but `step()` does not use it yet, so `TRACKING` can still begin during the climb.
+- There is no separate takeoff state: `HOVERING` includes the launch ([integration contract](../INTEGRATION_README.md) section 2). A launch goes `IDLE → HOVERING → TRACKING`, and `TRACKING` waits until the launch climb has finished ([integration contract](../INTEGRATION_README.md) section 7). `run_loop.py` passes the launch progress to `step()` as `context.launch_phase` (see "MissionStatus").
 - In Phase 0, "the dock" is a stationary pad in simulation. The golf-cart dock is the long-term product (see [Start Here](../START_HERE.md)).
 - The Motion command for each state is chosen by `wanted_command()` in `run_loop.py`. The mapping is a proposal and needs agreement with the Motion team. Command names are Motion's `MotionCommandType` ([`motion_engine/contracts.py`](../motion_engine/contracts.py)). The state machine only chooses the state; the loop issues the command.
 
@@ -58,7 +58,7 @@ What `step()` receives on one tick of the `full_cycle` demo (5000 ms: low batter
                    "valid": true, "timestamp_ns": 5000000000 },
   "vehicle":     { "armed": true, "airborne": true, "grounded": false, "pose": { "x": 0.0, "y": 0.0, "z": 5.0, "yaw_deg": 0.0 },
                    "valid": true, "timestamp_ns": 4900000000, "...": "the rest of Motion's VehicleFeedback" },
-  "context":     { "flight_active": true, "return_started_ns": null },
+  "context":     { "flight_active": true, "return_started_ns": null, "launch_phase": "none" },
   "safety":      { "permissions": { "launch": false, "tracking": false, "approach": false, "descent": false, "hold": true },
                    "emergency": false, "abort": false, "battery_low": true, "battery_critical": false,
                    "battery_recovered": false, "reasons": ["low_battery", "cart_moving"], "timestamp_ns": 5000000000 },
@@ -72,11 +72,11 @@ What `step()` receives on one tick of the `full_cycle` demo (5000 ms: low batter
 |---|---|
 | `bird`, `battery`, `environment`, `dock` | The demo scenario (`demos.py`), stamped with the current time. `bird` will come from CV once it is connected. `dock.pad_pose` is the fixed pad (`PAD` in `run_loop.py`). |
 | `vehicle` | Motion's feedback from the previous tick (`VehicleFeedback.to_dict()`) |
-| `context` | `run_loop.py`: `flight_active` is true while the drone is armed or airborne; `return_started_ns` is the return latch (see "Docking integration") |
+| `context` | `run_loop.py`: `flight_active` is true while the drone is armed or airborne; `return_started_ns` is the return latch (see "Docking integration"); `launch_phase` is the launch progress from the previous tick (see "MissionStatus") |
 | `safety` | Safety's `assess()`, worked out from the sections above |
 | `docking` | Docking's controller (`DockingUpdate.to_dict()`). Its `reasons` are why it wants to return; its `reason` is why its phase changed |
 
-`step()` reads `bird`, `safety` and `docking`, plus `vehicle`, `dock.pad_pose` and `timestamp_ns` for `DOCKED → IDLE`. The other sections are what Safety and Docking need to decide.
+`step()` reads `bird`, `safety` and `docking`, `context.launch_phase` for `HOVERING → TRACKING`, plus `vehicle`, `dock.pad_pose` and `timestamp_ns` for `DOCKED → IDLE`. The other sections are what Safety and Docking need to decide.
 
 ## Docking triggers
 
@@ -106,7 +106,7 @@ Rules are checked in priority order and the first match wins:
 | `TRACKING` | `tracking` not permitted | `HOVERING` |
 | `TRACKING` | Bird lost | `HOVERING` |
 | `HOVERING` | `should_dock` or hover timeout | `DOCKING_INIT` |
-| `HOVERING` | Bird detected and `tracking` permitted | `TRACKING` |
+| `HOVERING` | Bird detected, `tracking` permitted, and the launch climb has finished | `TRACKING` |
 | `DOCKING_INIT` | Safety permits the approach (`approach`) | `DOCKING_APPROACH` |
 | `DOCKING_INIT` | Approach not permitted | Stay and hold |
 | `DOCKING_APPROACH` | Docking phase `abort`, approach permission lost, or descent permission lost while descending | `ABORT` |
@@ -226,7 +226,7 @@ Each tick, after `step()`:
    - `DISARM` and `EMERGENCY_LAND` are sent once.
 4. `motion.step()` moves the drone by one tick, and `motion.feedback()` reads its new status.
 
-Nothing is sent while the takeoff is still climbing, because a new command would replace the takeoff.
+Nothing is sent while the takeoff is still climbing, because a new command would replace the takeoff. The climb counts as finished at the full 5 m, not within Motion's 0.25 m arrival tolerance, so the `HOVER` that follows holds the drone at 5 m.
 
 Not connected yet:
 
@@ -269,7 +269,7 @@ Give every module, the log and the tests the mission's status in one defined for
 
 `launch_phase` is `climbing` from the launch until the takeoff reaches its 5 m altitude, then `complete` until the mission leaves `HOVERING`. Everything else is `none`, including an ordinary hover after the bird is lost.
 
-The demos reach `complete` once `step()` waits for the climb before `TRACKING` ([integration contract](../INTEGRATION_README.md) section 7, not implemented yet). Until then, `test_launch_phase_reaches_complete` covers it with a launch where the bird leaves straight away, so the mission stays in `HOVERING` for the whole climb.
+`step()` reads it as `context.launch_phase` and only starts `TRACKING` once it is `complete` ([integration contract](../INTEGRATION_README.md) section 7). The climb takes 2.5 s, so in the demos a bird seen at 500 ms is tracked from 3000 ms.
 
 `outcome` (proposal): back on the pad (`IDLE` or `DOCKED`) is `completed`, `ABORT` or `EMERGENCY_LAND` is `failed`, and any other state means time ran out mid-mission, so `interrupted`. In the demos, `blocked_dock` is `interrupted`, `emergency` and `comm_loss` are `failed`, and the rest are `completed`.
 
@@ -350,12 +350,12 @@ It prints every state transition with its time and reason. With no name, it runs
 | Demo | Length | What happens |
 |---|---|---|
 | `full_cycle` | 10 s | Launch for a bird, lose it, return on low battery, wait for the cart, land, recharge |
-| `docking_retry` | 15 s | The pad alignment is lost; Docking searches above the pad, gives up after 5 s and the mission aborts. The retry finds the alignment and lands |
-| `emergency` | 9 s | The battery drops to 8% while tracking; Safety raises an emergency and the drone lands in place |
-| `blocked_dock` | 5.5 s | The cart keeps moving, so Safety never allows the approach; the drone holds in `DOCKING_INIT` |
-| `not_aligned` | 11 s | The drone reaches the pad before it can line up; Docking hovers above it until the alignment is valid, then lands |
-| `cart_during_descent` | 12 s | The cart starts moving mid-descent; the mission aborts, waits for the cart to stop, then Docking climbs back and lands |
-| `comm_loss` | 9 s | Communication is lost while tracking; Safety raises an emergency and the drone lands in place |
+| `docking_retry` | 16 s | The pad alignment is lost; Docking searches above the pad, gives up after 5 s and the mission aborts. The retry finds the alignment and lands |
+| `emergency` | 10 s | The battery drops to 8% while tracking; Safety raises an emergency and the drone lands in place |
+| `blocked_dock` | 6.5 s | The cart keeps moving, so Safety never allows the approach; the drone holds in `DOCKING_INIT` |
+| `not_aligned` | 12 s | The drone reaches the pad before it can line up; Docking hovers above it until the alignment is valid, then lands |
+| `cart_during_descent` | 13 s | The cart starts moving mid-descent; the mission aborts, waits for the cart to stop, then Docking climbs back and lands |
+| `comm_loss` | 10 s | Communication is lost while tracking; Safety raises an emergency and the drone lands in place |
 
 When the bird is lost and nothing else calls the drone home, it hovers for 3 s before Docking asks to return. A Safety restriction, such as low battery or the moving cart in `blocked_dock`, calls it home straight away.
 
