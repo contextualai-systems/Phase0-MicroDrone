@@ -1,0 +1,2 @@
+# Test runner for the existing pytest suites; CV dependencies stay in cv/requirements.txt.
+pytest>=8,<10
