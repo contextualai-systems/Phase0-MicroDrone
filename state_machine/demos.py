@@ -14,12 +14,15 @@
 
 BIRD_SEEN = {"detected": True, "type": "hawk", "distance_m": 30.0}
 BIRD_GONE = {"detected": False, "type": None, "distance_m": None}
+# Every demo starts with the camera working and no bird in view
+BIRD_DEMO_INIT = (0, {"bird": BIRD_GONE})
 
 
 # Full cycle: launch for a bird, lose it, return on low battery, wait for the cart, land, recharge.
 # Run for 10000 ms.
 # IDLE -> HOVERING -> TRACKING -> HOVERING -> DOCKING_INIT -> DOCKING_APPROACH -> DOCKED -> IDLE
 DEMO_SCENARIO = [
+    BIRD_DEMO_INIT,
     (1000, {"bird": {"detected": True, "type": "hawk", "distance_m": 30.0}}),
     (4000, {"bird": {"detected": False, "type": None, "distance_m": None}}),
     # Low battery and the cart starts moving: Safety allows only hold
@@ -37,6 +40,7 @@ DEMO_SCENARIO = [
 # IDLE -> HOVERING -> TRACKING -> HOVERING -> DOCKING_INIT -> DOCKING_APPROACH -> ABORT
 #      -> DOCKING_INIT -> DOCKING_APPROACH -> DOCKED -> IDLE
 DOCKING_RETRY_SCENARIO = [
+    BIRD_DEMO_INIT,
     (500, {"bird": BIRD_SEEN}),
     # The bird leaves (Docking asks to return 3 s later) and the pad alignment is lost
     (4000, {"bird": BIRD_GONE, "dock": {"alignment_valid": False}}),
@@ -50,6 +54,7 @@ DOCKING_RETRY_SCENARIO = [
 # Run for 10000 ms.
 # IDLE -> HOVERING -> TRACKING -> EMERGENCY_LAND
 EMERGENCY_SCENARIO = [
+    BIRD_DEMO_INIT,
     (500, {"bird": BIRD_SEEN}),
     (4000, {"battery": {"percent": 8}}),
 ]
@@ -59,6 +64,7 @@ EMERGENCY_SCENARIO = [
 # Run for 6500 ms.
 # IDLE -> HOVERING -> TRACKING -> DOCKING_INIT
 BLOCKED_DOCK_SCENARIO = [
+    BIRD_DEMO_INIT,
     (500, {"bird": BIRD_SEEN}),
     # The moving cart blocks tracking, so Docking asks to return straight away (no 3 s wait for the bird)
     (4000, {"bird": BIRD_GONE, "environment": {"cart_moving": True}}),
@@ -70,6 +76,7 @@ BLOCKED_DOCK_SCENARIO = [
 # Run for 12000 ms.
 # IDLE -> HOVERING -> TRACKING -> HOVERING -> DOCKING_INIT -> DOCKING_APPROACH -> DOCKED -> IDLE
 NOT_ALIGNED_SCENARIO = [
+    BIRD_DEMO_INIT,
     (500, {"bird": BIRD_SEEN}),
     # The bird leaves (Docking asks to return 3 s later) and the pad alignment is lost
     (4000, {"bird": BIRD_GONE, "dock": {"alignment_valid": False}}),
@@ -85,6 +92,7 @@ NOT_ALIGNED_SCENARIO = [
 # IDLE -> HOVERING -> TRACKING -> HOVERING -> DOCKING_INIT -> DOCKING_APPROACH -> ABORT
 #      -> DOCKING_INIT -> DOCKING_APPROACH -> DOCKED -> IDLE
 CART_DURING_DESCENT_SCENARIO = [
+    BIRD_DEMO_INIT,
     (500, {"bird": BIRD_SEEN}),
     # The bird leaves; Docking asks to return 3 s later
     (4000, {"bird": BIRD_GONE}),
@@ -99,6 +107,7 @@ CART_DURING_DESCENT_SCENARIO = [
 # Run for 10000 ms.
 # IDLE -> HOVERING -> TRACKING -> EMERGENCY_LAND
 COMM_LOSS_SCENARIO = [
+    BIRD_DEMO_INIT,
     (500, {"bird": BIRD_SEEN}),
     (4000, {"environment": {"comm_ok": False}}),
 ]

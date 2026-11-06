@@ -3,17 +3,20 @@ import argparse
 import copy
 import time
 import dataclasses
+import json
+import os
+import tempfile
 
 from docking.states.docking_controller import DockingController, DockingInput, PadObservation
 from state_machine.contracts import MissionStatus
-from state_machine.demos import DEMO_SCENARIO, DEMOS
+from state_machine.demos import DEMO_SCENARIO, DEMOS, BIRD_GONE
 from safety_layer.safety_policy import assess
 from state_machine.state_machine import State, step
 from universal_log.Universal_log import UniversalLog
 from motion_engine.contracts import Command, MotionCommandType, Pose, SimulationClock
 from motion_engine.motion_stubs import MotionLimits, MotionStub
 from motion_engine.safety_adapter import check_for_motion
-
+from cv.computer_vision import ComputerVision
 
 TICK_HZ = 10
 TICK_MS = 1000 // TICK_HZ  # 100 ms per tick
@@ -21,14 +24,44 @@ TICK_MS = 1000 // TICK_HZ  # 100 ms per tick
 VALIDITY_NS = 200_000_000  # a Motion command lasts 0.2 s unless it is renewed
 PAD = Pose(0, 0, 0, 0)     # the fixed landing pad, on the ground at the origin
 
+# used for when CV has no sample yet
+BIRD_UNAVAILABLE = {"detected": None, "type": None, "distance_m": None, "valid": False, "timestamp_ns": None, "reason": "no_sample"}
+
+
+
 # Motion runs these once; they are never renewed and have no expiry
 ONE_SHOT_KINDS = {MotionCommandType.DISARM, MotionCommandType.EMERGENCY_LAND}
+
+
+
+def build_temp_fixture(scenario, duration_ms):
+    currentBird = BIRD_GONE
+    segments = []
+
+    for tick in range(duration_ms // TICK_MS):
+        time_ms = tick * TICK_MS
+        for event_time_ms, event in scenario:
+            if event_time_ms == time_ms and "bird" in event is not None:
+                currentBird = event["bird"]
+        segments.append({
+            "frames": 1, "camera_ok": True, "bird": currentBird
+        })
+
+    fixture = {
+        "scenario_id": "demo",
+        "fps": TICK_HZ,
+        "loop": False,
+        "appearance": "bird",
+        "segments": segments
+    }
+    
+    return fixture
 
 
 # How every drone should be initialized: default values - 
 def init_world() -> dict:
     return {
-        "bird": {"detected": False, "type": None, "distance_m": None, "valid": True},
+        "bird": BIRD_UNAVAILABLE.copy(),
         "battery": {"percent": 100, "valid": True},
         "environment": {
             "people_nearby": False,
@@ -163,8 +196,10 @@ def send_command(motion, clock, active, state, reason, wanted, assessment):
     return ack
 
 
+# camera_fixture: the path to one of CV's own fixture files (such as cv/scenarios/integration_cycle.json).
+# The bird then comes from that file as it is; without it, the bird comes from the scenario's bird events.
 def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool = False,
-              scenario: list = DEMO_SCENARIO, viewPosition: bool = False):
+              scenario: list = DEMO_SCENARIO, viewPosition: bool = False, camera_fixture: str | None = None):
     world = init_world()
     currState = State.IDLE
     clock = SimulationClock()
@@ -184,6 +219,26 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
     statuses = []           # every tick's MissionStatus, for debugging and testing
     commands = []            # every new command sent to Motion: (time_ms, kind, accepted, reason)
     last_command_id = None   # so a command renewed every tick is only recorded once
+    records = []
+
+    # build the camera for the drone
+    cv = ComputerVision(
+        timestamp_mapper=lambda source_ns: source_ns,  # Explicit shared origin.
+        log_sink=records.append,
+    )
+
+    if camera_fixture is not None:
+        cv.start_camera(camera_fixture, camera_id="front")
+    else:
+        # CV only reads fixtures from a file, so write this run's bird fixture to a temporary one.
+        # start_camera reads the file straight away, so it can be deleted as soon as the camera starts.
+        fixture = build_temp_fixture(scenario, duration_ms)
+        with tempfile.TemporaryDirectory() as folder:
+            fixture_path = os.path.join(folder, "fixture.json")
+            with open(fixture_path, "w") as file:
+                json.dump(fixture, file)
+            cv.start_camera(fixture_path, camera_id="front")  # after the file is closed, so CV reads all of it
+
     for tick in range(duration_ms // TICK_MS):
         current_time_ms = tick * TICK_MS
 
@@ -212,8 +267,23 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
         assessment = assess(snapshot, now_ns)
         snapshot["safety"] = dataclasses.asdict(assessment)
 
+
+        
+        # start cv
+        cv.set_log_context(state=currState.value)  # Use the actual mission State.value.
+        try:
+            observation = cv.read_due(now_ns)
+        except StopIteration:
+            break
+        if observation is not None:
+            bird = observation.to_bird_snapshot()
+        else: 
+            bird = BIRD_UNAVAILABLE.copy()
+
+        snapshot["bird"] = bird.copy()
+        
         # remember when the bird went missing
-        bird = snapshot["bird"]
+        # bird = snapshot["bird"]
         if bird["valid"] and bird["detected"]:
             bird_absent = None
         elif bird["valid"] and not bird["detected"]:
@@ -244,6 +314,10 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
         )
         dockUpdate = docking.update(dockInputs, now_ns)
         snapshot["docking"] = dockUpdate.to_dict()
+
+
+       
+
 
 
         newState, reason = step(currState, snapshot)
@@ -329,6 +403,13 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
             
         if real_time:
             time.sleep(TICK_MS / 1000)  # Sleep for the duration of one tick in seconds
+
+    # A CV fixture that runs out ends the run before duration_ms, so the last tick
+    # that ran didn't get the outcome. Give it the outcome now.
+    if statuses and statuses[-1].outcome is None:
+        statuses[-1] = dataclasses.replace(statuses[-1], outcome=run_outcome(statuses[-1].state))
+
+    cv.stop_camera()
 
     return {
         "transitions": transitions,  # (time_ms, from_state, to_state, reason) for each state change

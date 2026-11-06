@@ -1,8 +1,10 @@
 import json
+from pathlib import Path
 
 import pytest
 
 from safety_layer.safety_policy import assess
+from state_machine import run_loop
 from state_machine.demos import BIRD_GONE, BIRD_SEEN, DEMOS
 from state_machine.run_loop import run_world
 from state_machine.state_machine import step, State
@@ -416,7 +418,7 @@ def test_each_tick_has_a_mission_status(name):
 def test_launch_phase_reaches_complete():
     # The bird leaves right after the launch, so the mission stays in HOVERING for the whole climb:
     # launch_phase goes none -> climbing -> complete, then back to none once the mission leaves HOVERING.
-    scenario = [(1000, {"bird": BIRD_SEEN}), (1100, {"bird": BIRD_GONE})]
+    scenario = [(0, {"bird": BIRD_GONE}), (1000, {"bird": BIRD_SEEN}), (1100, {"bird": BIRD_GONE})]
     statuses = run_world(4500, scenario=scenario)["statuses"]
 
     phases = []  # (state, launch_phase) each time either one changes
@@ -430,3 +432,58 @@ def test_launch_phase_reaches_complete():
         (State.DOCKING_INIT, "none"),
         (State.DOCKING_APPROACH, "none"),
     ]
+
+
+# CV's 15 Hz fixture: no bird for 1 s, bird 1-5 s, none 5-6 s, bird 6-8 s, none 8-12 s,
+# then missing frames until it ends at 13 s
+INTEGRATION_CYCLE = str(Path(__file__).resolve().parents[2] / "cv" / "scenarios" / "integration_cycle.json")
+FRAME_NS = 1_000_000_000 / 15  # time between two of its frames
+
+
+def birds_seen_by_step(monkeypatch, duration_ms, **run_args):
+    """Run the loop and record (tick time, snapshot["bird"]) on every tick, as step() receives them."""
+    birds = []
+    real_step = run_loop.step
+
+    def recording_step(state, snapshot):
+        birds.append((snapshot["timestamp_ns"], snapshot["bird"]))
+        return real_step(state, snapshot)
+
+    monkeypatch.setattr(run_loop, "step", recording_step)
+    run_world(duration_ms, **run_args)
+    return birds
+
+
+def test_cv_bird_keeps_its_own_sample_time(monkeypatch):
+    # At 15 Hz the samples fall between the 10 Hz ticks. The bird must keep its sample's time,
+    # not be restamped with the tick's time.
+    birds = birds_seen_by_step(monkeypatch, 15000, scenario=[], camera_fixture=INTEGRATION_CYCLE)
+    bird_at = dict(birds)  # tick time -> bird
+
+    assert bird_at[100_000_000]["timestamp_ns"] == 66_666_667  # frame 1, not the tick's 100 ms
+    assert bird_at[200_000_000]["frame_index"] == 3  # frames 2 and 3 were both due; the latest one wins
+    for now_ns, bird in birds:
+        # always the latest sample that is due: no later than the tick, and less than one frame before it
+        assert now_ns - FRAME_NS < bird["timestamp_ns"] <= now_ns
+
+    first_seen = next(now_ns for now_ns, bird in birds if bird["detected"] is True)
+    assert first_seen == 1_000_000_000  # frame 15
+
+    # Missing frames are missing input, not "no bird"
+    missing = [bird for now_ns, bird in birds if now_ns >= 12_000_000_000]
+    assert len(missing) == 10
+    for bird in missing:
+        assert bird["detected"] is None and bird["valid"] is False and bird["reason"] == "missing_frame"
+
+
+def test_run_ends_when_the_cv_fixture_runs_out():
+    # The fixture ends at 13 s, so a 15 s run stops after the tick at 12.9 s.
+    # That is the planned end of the scenario, so the last tick that ran still gets the outcome.
+    statuses = run_world(15000, scenario=[], camera_fixture=INTEGRATION_CYCLE)["statuses"]
+
+    assert len(statuses) == 130
+    assert statuses[-1].timestamp_ns == 12_900_000_000
+    assert statuses[-1].state == State.DOCKING_APPROACH
+    assert statuses[-1].outcome == "interrupted"  # still airborne when the scenario ended
+    for status in statuses[:-1]:
+        assert status.outcome is None
