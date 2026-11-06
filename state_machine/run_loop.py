@@ -235,7 +235,7 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
         if observation is not None:
             bird = observation.to_bird_snapshot()
         else: 
-            bird = BIRD_UNAVAILABLE
+            bird = BIRD_UNAVAILABLE.copy()
 
         snapshot["bird"] = bird.copy()
         
