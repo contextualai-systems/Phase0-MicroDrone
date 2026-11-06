@@ -7,14 +7,8 @@ these tests make any drift between the two a CI failure instead of a silent
 disagreement about where the geofence is.
 """
 
-import sys
 from dataclasses import fields
-from pathlib import Path
 from types import SimpleNamespace
-
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
 
 import pytest
 
@@ -46,15 +40,34 @@ def test_defaults_equal_from_config():
     assert MotionLimits() == MotionLimits.from_config()
 
 
-def test_every_shared_name_exists_in_config():
-    missing = [name for name in SHARED.values() if not hasattr(config, name)]
-    assert missing == []
+def test_comm_loss_landing_fits_inside_the_return_deadline():
+    """The 10 s comm-loss hold plus a worst-case descent from the ceiling
+    must finish well before Safety's return deadline."""
+    lim = MotionLimits()
+    assert lim.comm_loss_land_timeout_ns == 10 * 1_000_000_000
+    worst_ns = lim.comm_loss_land_timeout_ns + lim.max_altitude_m / lim.max_vertical_speed_mps * 1e9
+    assert worst_ns < config.RETURN_DEADLINE_NS
 
 
 def test_unshared_fields_are_only_the_documented_ones():
     """A new MotionLimits field must be mapped to config or listed here."""
     unshared = {f.name for f in fields(MotionLimits)} - set(SHARED)
-    assert unshared == {"min_altitude_m", "emergency_descent_mps"}
+    assert unshared == {"min_altitude_m", "emergency_descent_mps", "comm_loss_land_timeout_ns"}
+
+
+def test_comm_loss_timeout_follows_config_when_defined():
+    """Motion owns the 10 s default until Safety's config defines the constant;
+    once it does, from_config() uses Safety's value."""
+    base = {name: getattr(config, name) for name in SHARED.values()}
+    assert MotionLimits.from_config(SimpleNamespace(**base)).comm_loss_land_timeout_ns == 10 * 1_000_000_000
+    lim = MotionLimits.from_config(SimpleNamespace(**base, COMM_LOSS_LAND_TIMEOUT_NS=7 * 1_000_000_000))
+    assert lim.comm_loss_land_timeout_ns == 7 * 1_000_000_000
+
+
+@pytest.mark.xfail(strict=True, reason="pending Safety team: add COMM_LOSS_LAND_TIMEOUT_NS to "
+                   "safety_layer/config.py (see the Safety request doc); remove this marker then")
+def test_safety_config_defines_the_comm_loss_timeout():
+    assert config.COMM_LOSS_LAND_TIMEOUT_NS == MotionLimits().comm_loss_land_timeout_ns
 
 
 def test_from_config_follows_a_changed_config(monkeypatch):

@@ -11,13 +11,6 @@ If the state machine changes how it drives Motion and Motion stops agreeing,
 this file is where it shows up.
 """
 
-import sys
-from dataclasses import replace
-from pathlib import Path
-
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
 
 import pytest
 
@@ -25,19 +18,17 @@ import state_machine.run_loop as run_loop
 from state_machine.demos import DEMOS
 from state_machine.state_machine import State
 from motion_engine.contracts import (
-    Command,
     CommandStatus,
     MemoryLogSink,
     MotionCommandType as K,
     Pose,
-    SimulationClock,
 )
 from motion_engine.motion_stubs import MotionStub
+from motion_engine.tests.motion_rig import DT, Rig
 from motion_engine.trace_checker import TraceRecorder, check_trace
 
 PAD = Pose(0.0, 0.0, 0.0, 0.0)
 TAKEOFF_Z = 5.0  # run_loop.launch_drone() climbs to 5 m
-DT = run_loop.TICK_MS / 1000
 
 
 class RecordedMotion:
@@ -152,34 +143,18 @@ def test_blocked_dock_holds_still_at_takeoff_altitude(run_demo):
 # --------------------------------------------------------------------------
 
 
-def _land_on_pad_then_stop_renewing():
-    clock = SimulationClock()
-    motion = MotionStub(clock=clock)
-    rec = TraceRecorder(motion)
-    rec.snapshot(clock.timestamp_ns)
+def _pad_rig() -> Rig:
+    """A recorded rig on run_loop's validity window, holding at 2 m over the pad."""
+    assert run_loop.TICK_MS / 1000 == DT  # the rig ticks like run_loop does
+    rig = Rig(validity_ns=run_loop.VALIDITY_NS)
+    rig.launch(2.0)
+    return rig
 
-    def cmd(cid, kind, target=None, lifecycle=False):
-        now = clock.timestamp_ns
-        return Command(cid, kind, "DOCKING_APPROACH", now,
-                       None if lifecycle else now + run_loop.VALIDITY_NS,
-                       "test", "alignment", target=target)
 
-    def tick(*cmds):
-        for c in cmds:
-            assert rec.submit(c, clock.timestamp_ns).accepted
-        rec.step(DT, clock.timestamp_ns)
-        clock.advance(DT)
-        return motion.feedback(clock.timestamp_ns)
-
-    tick(cmd("arm", K.ARM, lifecycle=True), cmd("takeoff", K.TAKEOFF, Pose(0, 0, 2.0, 0), lifecycle=True))
-    while motion.pose.z != 2.0:
-        tick()
-    descend = cmd("descend", K.DESCEND_TO_DOCK, PAD)
-    fb = tick(descend)
-    while not fb.landing_settled:
-        fb = tick(replace(descend, issued_ns=clock.timestamp_ns,
-                          expires_ns=clock.timestamp_ns + run_loop.VALIDITY_NS))
-    return motion, rec, clock, tick
+def _accepted_tick(rig: Rig, *cmds):
+    for c in cmds:
+        assert rig.submit(c).accepted, c
+    return rig.tick()
 
 
 def test_settled_landing_survives_its_command_expiring():
@@ -187,18 +162,21 @@ def test_settled_landing_survives_its_command_expiring():
     confirm touchdown from landing_settled. If the landing command expires on
     the ground, Motion must keep reporting the landing, not swap it for an
     expired hold."""
-    motion, rec, clock, tick = _land_on_pad_then_stop_renewing()
+    rig = _pad_rig()
+    descend = rig.cmd(K.DESCEND_TO_DOCK, PAD, mission_state="DOCKING_APPROACH")
+    fb = _accepted_tick(rig, descend)
+    while not fb.landing_settled:
+        fb = _accepted_tick(rig, rig.renewed(descend))
+
     for _ in range(10):  # well past the 0.2 s validity, no renewals
-        fb = tick()
+        fb = rig.tick()
         assert fb.status == CommandStatus.LANDED
         assert fb.landing_settled and fb.grounded and fb.armed
-    assert motion.pose.as_tuple()[:3] == PAD.as_tuple()[:3]
+    assert rig.motion.pose.as_tuple()[:3] == PAD.as_tuple()[:3]
 
-    disarm = Command("disarm", K.DISARM, "DOCKED", clock.timestamp_ns, None, "test", "alignment")
-    fb = tick(disarm)
+    fb = _accepted_tick(rig, rig.cmd(K.DISARM, lifecycle=True, mission_state="DOCKED"))
     assert not fb.armed and fb.landing_settled
-    report = check_trace(rec.samples, limits=motion.limits, home=motion.home)
-    assert report.ok, report.format_text()
+    rig.check()
 
 
 def test_off_pad_touchdown_is_not_settled_and_holds_when_it_expires():
@@ -206,46 +184,23 @@ def test_off_pad_touchdown_is_not_settled_and_holds_when_it_expires():
     starts off the pad can reach z = 0 while still sliding toward it. That is
     not a finished landing: it must not read as landed, and if the command
     stops being renewed the drone must hold where it is, not keep sliding."""
-    clock = SimulationClock()
-    motion = MotionStub(clock=clock)
-    rec = TraceRecorder(motion)
-    rec.snapshot(clock.timestamp_ns)
-
-    def tick(*cmds):
-        for c in cmds:
-            assert rec.submit(c, clock.timestamp_ns).accepted
-        rec.step(DT, clock.timestamp_ns)
-        clock.advance(DT)
-        return motion.feedback(clock.timestamp_ns)
-
-    def cmd(cid, kind, target=None, lifecycle=False):
-        now = clock.timestamp_ns
-        return Command(cid, kind, "DOCKING_APPROACH", now,
-                       None if lifecycle else now + run_loop.VALIDITY_NS,
-                       "test", "alignment", target=target)
-
-    tick(cmd("arm", K.ARM, lifecycle=True), cmd("takeoff", K.TAKEOFF, Pose(0, 0, 2.0, 0), lifecycle=True))
-    while motion.pose.z != 2.0:
-        tick()
-    move = cmd("move", K.MOVE_TO, Pose(20.0, 0.0, 2.0, 0.0))
-    fb = tick(move)
-    while motion.pose.x != 20.0:
-        fb = tick(replace(move, issued_ns=clock.timestamp_ns,
-                          expires_ns=clock.timestamp_ns + run_loop.VALIDITY_NS))
-    descend = cmd("descend", K.DESCEND_TO_DOCK, PAD)
-    fb = tick(descend)
-    while motion.pose.z != 0.0:
-        fb = tick(replace(descend, issued_ns=clock.timestamp_ns,
-                          expires_ns=clock.timestamp_ns + run_loop.VALIDITY_NS))
-    assert motion.pose.x > 1.0                       # on the ground, still short of the pad
+    rig = _pad_rig()
+    move = rig.cmd(K.MOVE_TO, Pose(20.0, 0.0, 2.0, 0.0), mission_state="DOCKING_APPROACH")
+    fb = _accepted_tick(rig, move)
+    while rig.motion.pose.x != 20.0:
+        fb = _accepted_tick(rig, rig.renewed(move))
+    descend = rig.cmd(K.DESCEND_TO_DOCK, PAD, mission_state="DOCKING_APPROACH")
+    fb = _accepted_tick(rig, descend)
+    while rig.motion.pose.z != 0.0:
+        fb = _accepted_tick(rig, rig.renewed(descend))
+    assert rig.motion.pose.x > 1.0                   # on the ground, still short of the pad
     assert not fb.landing_settled and fb.status != CommandStatus.LANDED
 
-    tick(); fb = tick(); fb = tick()                 # stop renewing: it expires
+    rig.tick(); rig.tick(); fb = rig.tick()          # stop renewing: it expires
     assert fb.status == CommandStatus.EXPIRED_HOLD
-    stopped = motion.pose
+    stopped = rig.motion.pose
     for _ in range(10):
-        fb = tick()
-        assert motion.pose == stopped                # no sliding on an expired target
+        fb = rig.tick()
+        assert rig.motion.pose == stopped            # no sliding on an expired target
     assert not fb.landing_settled
-    report = check_trace(rec.samples, limits=motion.limits, home=motion.home)
-    assert report.ok, report.format_text()
+    rig.check()
