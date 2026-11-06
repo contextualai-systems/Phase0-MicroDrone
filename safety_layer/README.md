@@ -21,9 +21,21 @@ the software behaves as specified, not that a real drone would be safe.
 | `assess(snapshot, now_ns)` | Is `launch` / `tracking` / `approach` / `descent` / `hold` allowed right now? |
 | `check_command(command, assessment, now_ns)` | Is this specific order safe to send? |
 
-An unsafe order gets a **replacement** (hold, or emergency land), never a
-silent refusal — withholding a command would leave the drone flying toward its
-old target. These run at steps 3 and 7 of each tick.
+An unsafe order gets a **replacement**, never a silent refusal — withholding a
+command would leave the drone flying toward its old target. These run at steps
+3 and 7 of each tick.
+
+| Where the drone is | Normal replacement | In an emergency |
+|---|---|---|
+| In the air | `HOVER` (`LAND` if even hold is blocked) | `EMERGENCY_LAND` |
+| On the ground | `DISARM` (motors off) | `DISARM` |
+
+"On the ground" means fresh vehicle data says `grounded` and not `airborne`
+(`SafetyAssessment.grounded`). If Safety isn't sure, it assumes the drone is
+flying, because turning the motors off in the air is a crash (Motion refuses
+it anyway). If an order already *is* the emergency response — an
+`EMERGENCY_LAND` in the air, or a `DISARM` on the ground — it passes through
+unchanged instead of being swapped for an identical copy.
 
 ## How decisions are made
 
@@ -175,9 +187,6 @@ state machine's hover goes through.
 
 - Should the coordinator log an event every tick, or only when something
   changes? Every tick is complete but long.
-- In the `emergency` demo the state machine asks for `EMERGENCY_LAND`, and
-  Safety "replaces" it with an identical `EMERGENCY_LAND` under a new name.
-  Should Safety pass an `EMERGENCY_LAND` through unchanged during an emergency?
 
 ## Not done yet
 

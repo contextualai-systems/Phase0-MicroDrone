@@ -8,6 +8,12 @@ If an order is unsafe we hand back a SAFE REPLACEMENT, never a bare "no".
 The integration plan is explicit about this: simply not sending a command
 would leave the drone chasing whatever target it already had.
 
+Which replacement depends on where the drone is:
+  in the air    -> HOVER (or LAND if even holding isn't allowed),
+                   EMERGENCY_LAND in an emergency
+  on the ground -> DISARM (motors off). Hovering or landing makes no sense
+                   for a drone that is already down.
+
 Order shape comes from Motion's shared contract, so Safety and Motion agree
 on field names. That file is expected to move to state_machine/contracts.py
 later; only the import below should need changing.
@@ -73,7 +79,7 @@ def _safety_command(
 ) -> Command:
     """Build a replacement order from Safety.
 
-    HOVER and EMERGENCY_LAND both act where the drone currently is, so we
+    HOVER, DISARM and EMERGENCY_LAND all act where the drone currently is, so we
     deliberately drop the original target instead of reusing it: the old
     destination is exactly what we're trying to stop.
     """
@@ -144,6 +150,36 @@ def _speed_caps_ok(command: Command) -> bool:
     return True
 
 
+def _fallback_kind(assessment: SafetyAssessment) -> MotionCommandType:
+    """What to send instead of a rejected order."""
+    if assessment.grounded:
+        # Already down: just turn the motors off.
+        return MotionCommandType.DISARM
+    if assessment.allows("hold"):
+        # Hovering is how the drone stops in the air.
+        return MotionCommandType.HOVER
+    # In the air and even holding isn't permitted: something is badly
+    # wrong, so come down instead.
+    return MotionCommandType.LAND
+
+
+def _already_the_safe_response(command: Command, emergency_kind, now_ns: int) -> bool:
+    """Is this order exactly what Safety would send anyway?
+
+    If so we pass it through unchanged instead of swapping it for an
+    identical copy under a new name, which only confuses the logs.
+    """
+    try:
+        kind = MotionCommandType(command.kind)
+    except ValueError:
+        return False
+    return (
+        kind == emergency_kind
+        and command.validate() is None
+        and not _expired(command, now_ns)
+    )
+
+
 def check_command(
     command: Command, assessment: SafetyAssessment, now_ns: int
 ) -> CommandDecision:
@@ -153,13 +189,19 @@ def check_command(
     assessment: what the first safety check decided this tick
     now_ns:     the current simulation time
     """
-    # 1. An emergency beats everything: come down here, now.
+    # 1. An emergency beats everything. In the air: come down here, now.
+    #    On the ground: turn the motors off.
     if assessment.emergency:
+        emergency_kind = (
+            MotionCommandType.DISARM
+            if assessment.grounded
+            else MotionCommandType.EMERGENCY_LAND
+        )
+        if _already_the_safe_response(command, emergency_kind, now_ns):
+            return CommandDecision(allowed=True, command=command, timestamp_ns=now_ns)
         return CommandDecision(
             allowed=False,
-            command=_safety_command(
-                command, MotionCommandType.EMERGENCY_LAND, now_ns, Reason.ACCEPTED
-            ),
+            command=_safety_command(command, emergency_kind, now_ns, Reason.ACCEPTED),
             reasons=(EMERGENCY,) + assessment.reasons,
             timestamp_ns=now_ns,
         )
@@ -198,16 +240,11 @@ def check_command(
         problems.append(SPEED_LIMIT)
 
     if problems:
-        # Hovering is how the drone stops. If even holding isn't permitted,
-        # something is badly wrong, so come down instead.
-        fallback = (
-            MotionCommandType.HOVER
-            if assessment.allows("hold")
-            else MotionCommandType.LAND
-        )
         return CommandDecision(
             allowed=False,
-            command=_safety_command(command, fallback, now_ns, Reason.ACCEPTED),
+            command=_safety_command(
+                command, _fallback_kind(assessment), now_ns, Reason.ACCEPTED
+            ),
             reasons=tuple(dict.fromkeys(problems)),
             timestamp_ns=now_ns,
         )

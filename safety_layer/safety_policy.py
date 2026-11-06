@@ -42,6 +42,10 @@ class SafetyAssessment:
     battery_low: bool = False        # battery is getting low
     battery_critical: bool = False   # battery is nearly dead
     battery_recovered: bool = False  # battery is charged enough to take off
+    # True only when fresh data clearly says the drone is sitting on the
+    # ground. Defaults to False ("assume it's flying"), because telling a
+    # flying drone to turn its motors off would make it fall.
+    grounded: bool = False
     reasons: Tuple[str, ...] = field(default_factory=tuple)  # short words explaining why
     timestamp_ns: int = 0            # what time this answer was given
 
@@ -115,6 +119,15 @@ def assess(snapshot: dict, now_ns: int) -> SafetyAssessment:
 
     # Is the drone currently in the air? Rules are different on the ground.
     flight_active = bool(context.get("flight_active"))
+
+    # Is it actually sitting on the ground? This is a stricter question than
+    # "not flying": the motors may still be on (just landed, or about to take
+    # off). We only say yes when fresh data clearly says so.
+    grounded = (
+        vehicle_ok
+        and vehicle.get("grounded") is True
+        and vehicle.get("airborne") is not True
+    )
 
     # Work out the battery situation once, so we don't repeat ourselves.
     percent = battery.get("percent")
@@ -239,6 +252,7 @@ def assess(snapshot: dict, now_ns: int) -> SafetyAssessment:
         battery_low=battery_low,
         battery_critical=battery_critical,
         battery_recovered=battery_recovered,
+        grounded=grounded,
         # dict.fromkeys keeps the order but removes repeats, so the same
         # reason doesn't show up twice.
         reasons=tuple(dict.fromkeys(reasons)),
