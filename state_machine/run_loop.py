@@ -13,6 +13,7 @@ from universal_log.Universal_log import UniversalLog
 from motion_engine.contracts import Command, MotionCommandType, Pose, SimulationClock
 from motion_engine.motion_stubs import MotionLimits, MotionStub
 from motion_engine.safety_adapter import check_for_motion
+from cv.computer_vision import ComputerVision
 
 
 TICK_HZ = 10
@@ -21,6 +22,11 @@ TICK_MS = 1000 // TICK_HZ  # 100 ms per tick
 VALIDITY_NS = 200_000_000  # a Motion command lasts 0.2 s unless it is renewed
 PAD = Pose(0, 0, 0, 0)     # the fixed landing pad, on the ground at the origin
 
+# used for when CV has no sample yet
+BIRD_UNAVAILABLE = {"detected": None, "type": None, "distance_m": None, "valid": False, "timestamp_ms": None, "reason": "no_sample"}
+
+
+
 # Motion runs these once; they are never renewed and have no expiry
 ONE_SHOT_KINDS = {MotionCommandType.DISARM, MotionCommandType.EMERGENCY_LAND}
 
@@ -28,7 +34,7 @@ ONE_SHOT_KINDS = {MotionCommandType.DISARM, MotionCommandType.EMERGENCY_LAND}
 # How every drone should be initialized: default values - 
 def init_world() -> dict:
     return {
-        "bird": {"detected": False, "type": None, "distance_m": None, "valid": True},
+        "bird": BIRD_UNAVAILABLE.copy(),
         "battery": {"percent": 100, "valid": True},
         "environment": {
             "people_nearby": False,
@@ -184,6 +190,15 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
     statuses = []           # every tick's MissionStatus, for debugging and testing
     commands = []            # every new command sent to Motion: (time_ms, kind, accepted, reason)
     last_command_id = None   # so a command renewed every tick is only recorded once
+    records = []
+
+    # build the camera for the drone
+    cv = ComputerVision(
+        timestamp_mapper=lambda source_ns: source_ns,  # Explicit shared origin.
+        log_sink=records.append,
+    )
+    cv.start_camera("cv/scenarios/integration_cycle.json", camera_id="front") # start the camera
+
     for tick in range(duration_ms // TICK_MS):
         current_time_ms = tick * TICK_MS
 
@@ -212,8 +227,20 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
         assessment = assess(snapshot, now_ns)
         snapshot["safety"] = dataclasses.asdict(assessment)
 
+
+         #start cv
+        cv.set_log_context(state=currState.value)  # Use the actual mission State.value.
+        observation = cv.read_due(now_ns)
+
+        if observation is not None:
+            bird = observation.to_bird_snapshot()
+        else: 
+            bird = BIRD_UNAVAILABLE
+
+        snapshot["bird"] = bird.copy()
+        
         # remember when the bird went missing
-        bird = snapshot["bird"]
+        # bird = snapshot["bird"]
         if bird["valid"] and bird["detected"]:
             bird_absent = None
         elif bird["valid"] and not bird["detected"]:
@@ -244,6 +271,10 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
         )
         dockUpdate = docking.update(dockInputs, now_ns)
         snapshot["docking"] = dockUpdate.to_dict()
+
+
+       
+
 
 
         newState, reason = step(currState, snapshot)
@@ -329,6 +360,8 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
             
         if real_time:
             time.sleep(TICK_MS / 1000)  # Sleep for the duration of one tick in seconds
+
+    cv.stop_camera()
 
     return {
         "transitions": transitions,  # (time_ms, from_state, to_state, reason) for each state change
