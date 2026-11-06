@@ -219,18 +219,18 @@ EXPECTED_DEMOS = {
     "full_cycle": {
         "states": [State.HOVERING, State.TRACKING, State.HOVERING, State.DOCKING_INIT,
                    State.DOCKING_APPROACH, State.DOCKED, State.IDLE],
-        # Docking flies the approach and descent. The second HOVER is Safety's replacement for
-        # Docking's MOVE_TO (alignment), because low battery blocks tracking
-        "commands": ["ARM", "TAKEOFF", "HOVER", "GOTO_DOCK_APPROACH", "HOVER", "DESCEND_TO_DOCK", "DISARM"],
+        # Docking flies the approach and descent. Docking aligns with GOTO_DOCK_APPROACH too; the drone is
+        # already over the pad, so the target is the same and it renews the approach command
+        "commands": ["ARM", "TAKEOFF", "HOVER", "GOTO_DOCK_APPROACH", "DESCEND_TO_DOCK", "DISARM"],
         "grounded": True, "armed": False,
     },
     "docking_retry": {
         "states": [State.HOVERING, State.TRACKING, State.HOVERING, State.DOCKING_INIT, State.DOCKING_APPROACH,
                    State.ABORT, State.DOCKING_INIT, State.DOCKING_APPROACH, State.DOCKED, State.IDLE],
         # Each attempt: GOTO_DOCK_APPROACH, then HOVER while Docking searches for the pad alignment.
-        # The first search times out (STOP in ABORT); the second finds it, aligns and descends
+        # The first search times out (STOP in ABORT); the second finds it, aligns (GOTO_DOCK_APPROACH) and descends
         "commands": ["ARM", "TAKEOFF", "HOVER", "GOTO_DOCK_APPROACH", "HOVER", "STOP", "HOVER",
-                     "GOTO_DOCK_APPROACH", "HOVER", "MOVE_TO", "DESCEND_TO_DOCK", "DISARM"],
+                     "GOTO_DOCK_APPROACH", "HOVER", "GOTO_DOCK_APPROACH", "DESCEND_TO_DOCK", "DISARM"],
         "grounded": True, "armed": False,
     },
     "emergency": {
@@ -246,17 +246,19 @@ EXPECTED_DEMOS = {
     "not_aligned": {
         "states": [State.HOVERING, State.TRACKING, State.HOVERING, State.DOCKING_INIT, State.DOCKING_APPROACH,
                    State.DOCKED, State.IDLE],
-        # The second HOVER is Docking searching above the pad until the alignment is valid
-        "commands": ["ARM", "TAKEOFF", "HOVER", "GOTO_DOCK_APPROACH", "HOVER", "MOVE_TO", "DESCEND_TO_DOCK",
-                     "DISARM"],
+        # The second HOVER is Docking searching above the pad until the alignment is valid;
+        # the second GOTO_DOCK_APPROACH is Docking aligning
+        "commands": ["ARM", "TAKEOFF", "HOVER", "GOTO_DOCK_APPROACH", "HOVER", "GOTO_DOCK_APPROACH",
+                     "DESCEND_TO_DOCK", "DISARM"],
         "grounded": True, "armed": False,
     },
     "cart_during_descent": {
         "states": [State.HOVERING, State.TRACKING, State.HOVERING, State.DOCKING_INIT, State.DOCKING_APPROACH,
                    State.ABORT, State.DOCKING_INIT, State.DOCKING_APPROACH, State.DOCKED, State.IDLE],
-        # The second attempt starts with GOTO_DOCK_APPROACH again, to climb back from where the descent stopped
-        "commands": ["ARM", "TAKEOFF", "HOVER", "GOTO_DOCK_APPROACH", "MOVE_TO", "DESCEND_TO_DOCK", "STOP",
-                     "HOVER", "GOTO_DOCK_APPROACH", "MOVE_TO", "DESCEND_TO_DOCK", "DISARM"],
+        # The second attempt starts with GOTO_DOCK_APPROACH again, to climb back from where the descent stopped.
+        # Aligning renews that same GOTO_DOCK_APPROACH, because the drone is already over the pad
+        "commands": ["ARM", "TAKEOFF", "HOVER", "GOTO_DOCK_APPROACH", "DESCEND_TO_DOCK", "STOP",
+                     "HOVER", "GOTO_DOCK_APPROACH", "DESCEND_TO_DOCK", "DISARM"],
         "grounded": True, "armed": False,
     },
     "comm_loss": {

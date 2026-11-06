@@ -16,7 +16,7 @@ Phase 0 is purely synthetic: all inputs are generated values, not sensor or simu
 | `TRACKING` | Air | Airborne and following a detected bird | None yet (needs a tracking target; Navigation has no code) |
 | `HOVERING` | Launching from the dock, or air | Launching (arming and climbing), or airborne and holding position (bird lost, temporarily unsafe, or waiting to dock) | `ARM` + `TAKEOFF` once when coming from `IDLE`; `HOVER` once the climb has finished |
 | `DOCKING_INIT` | Air | Docking requested; checking that the dock can be approached | `HOVER` while waiting for approach permission |
-| `DOCKING_APPROACH` | Air → landing on the dock | Moving toward and descending onto the dock | Docking's proposed command: `GOTO_DOCK_APPROACH`, `HOVER` (searching for the pad), `MOVE_TO` (aligning), `DESCEND_TO_DOCK`. `HOVER` when Docking proposes nothing |
+| `DOCKING_APPROACH` | Air → landing on the dock | Moving toward and descending onto the dock | Docking's proposed command: `GOTO_DOCK_APPROACH` (approaching and aligning), `HOVER` (searching for the pad), `DESCEND_TO_DOCK`. `HOVER` when Docking proposes nothing |
 | `DOCKED` | On the dock | Landed on the dock | `DISARM`, once the drone is on the ground |
 | `ABORT` | Air | Current action cancelled; deciding whether to recover or land | `STOP` (hold in place) |
 | `EMERGENCY_LAND` | Air → landing where it is | Synthetic only. Land immediately at the current position | `EMERGENCY_LAND`, once |
@@ -222,7 +222,7 @@ Each tick, after `step()`:
 1. On `IDLE → HOVERING`, `launch_drone()` sends `ARM` and `TAKEOFF` once.
 2. `wanted_command(state, vehicle, proposal)` picks the command for the current state (the last column of the States table), using Motion's feedback from the previous tick and, in `DOCKING_APPROACH`, Docking's proposed command.
 3. `send_command()` sends it, after Safety's command check:
-   - `HOVER`, `STOP`, `GOTO_DOCK_APPROACH`, `MOVE_TO` and `DESCEND_TO_DOCK` are valid for 0.2 s and are renewed every tick with the same command id. A different command gets a new id.
+   - `HOVER`, `STOP`, `GOTO_DOCK_APPROACH` and `DESCEND_TO_DOCK` are valid for 0.2 s and are renewed every tick with the same command id. A different command gets a new id.
    - `DISARM` and `EMERGENCY_LAND` are sent once.
 4. `motion.step()` moves the drone by one tick, and `motion.feedback()` reads its new status.
 
@@ -234,7 +234,6 @@ Not connected yet:
 - A command that Motion rejects is printed, not handled. `context` does not yet report it to Safety (`pending_command_failure`), and has no `operator_abort`.
 - The bird is still scripted by the demo scenarios; CV is not connected yet.
 - The 60 s return deadline does not fire yet (see "Safety integration"), so a drone that can never line up with the pad keeps retrying until the run ends.
-- Docking aligns with `MOVE_TO`, which Safety's command check treats as tracking. Low battery blocks tracking, so on a low-battery return Safety replaces the alignment with `HOVER` (visible in `full_cycle`). It does no harm while the drone is already over the pad; the Safety and Docking teams need to agree which permission alignment needs.
 
 ## Running
 
