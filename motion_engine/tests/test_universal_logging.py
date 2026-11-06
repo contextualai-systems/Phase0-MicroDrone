@@ -1,4 +1,4 @@
-"""MotionStub logging through the shared UniversalLog (universal_log/).
+"""Motion's logging: the shared UniversalLog adapter and integrated runs.
 
 `UniversalLogSink` adapts Motion's `LogSink` calls to UniversalLog's
 `{"State", "Details"}` records. These tests check that:
@@ -9,18 +9,18 @@
   coordinator's mission state, into the same run file CV uses,
 * mission-state enums, missing state and non-JSON values are handled
   instead of raising inside the mission loop.
+
+Passing this logger into the integrated loop (`state_machine/run_loop.py`)
+is the State Machine team's change; its tests travel with that request.
 """
 
 import json
 import logging
 import math
-import sys
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
 
 import pytest
 

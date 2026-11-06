@@ -11,8 +11,6 @@ import sys
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
 _SYNTHETIC = _REPO_ROOT / "motion_engine" / "synthetic"
 if str(_SYNTHETIC) not in sys.path:
     sys.path.insert(0, str(_SYNTHETIC))
@@ -68,13 +66,6 @@ def test_moving_exactly_at_every_limit_is_allowed():
 def test_yaw_rate_uses_the_short_way_round():
     trace = [sample(0, z=5.0, yaw=358.0), sample(1, z=5.0, yaw=4.0)]  # 6 deg, not 354
     assert check_trace(trace).ok
-
-
-def test_full_feedback_trace_runs_every_rule():
-    rec = record_demo_mission()
-    report = check_trace(rec.samples, limits=rec.motion.limits)
-    assert report.ok, report.format_text()
-    assert report.rules_checked == list(RULES)
 
 
 def test_pose_only_trace_skips_the_rules_that_need_flags():
@@ -233,9 +224,11 @@ def test_jsonl_with_an_unknown_schema_version_is_refused(tmp_path):
         load_jsonl(path)
 
 
-def test_demo_mission_is_a_clean_nominal_landing():
-    report = check_trace(record_demo_mission().samples)
-    assert report.ok
+def test_demo_mission_is_a_clean_nominal_landing_checked_by_every_rule():
+    rec = record_demo_mission()
+    report = check_trace(rec.samples, limits=rec.motion.limits)
+    assert report.ok, report.format_text()
+    assert report.rules_checked == list(RULES)  # full feedback: no rule skipped
     m = report.metrics
     assert m["landed"] is True and m["landing_error_m"] == 0.0
     assert m["rejected_by_reason"] == {} and m["expired_hold_ticks"] == 0

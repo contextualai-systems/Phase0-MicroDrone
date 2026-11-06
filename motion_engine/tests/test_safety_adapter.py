@@ -6,36 +6,15 @@ will: Safety rules on each command, Motion executes whatever Safety approved
 or substituted. Since #65 both sides share Motion's contract `Command`.
 """
 
-import sys
-from pathlib import Path
-
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-
 import pytest
 
-from motion_engine.contracts import CONTRACT_KINDS, Command, MotionCommandType as K, Pose
-from motion_engine.motion_stubs import MotionLimits, MotionStub
+from motion_engine.contracts import CONTRACT_KINDS, Command, MotionCommandType as K, Pose, Velocity
+from motion_engine.motion_stubs import MotionStub
 from motion_engine.safety_adapter import check_for_motion
+from motion_engine.tests.motion_rig import ALL_OK, DT_NS, S, VALIDITY_NS, assessment
 from safety_layer import config
 from safety_layer.command_check import KIND_TO_ACTION, CommandDecision
-from safety_layer.safety_policy import ACTIONS, SafetyAssessment
-
-S = 1_000_000_000
-DT_NS = 100_000_000
-VALIDITY_NS = 200_000_000
-
-
-def assessment(blocked=(), emergency=False, abort=False):
-    return SafetyAssessment(
-        permissions={a: a not in blocked for a in ACTIONS},
-        emergency=emergency,
-        abort=abort,
-    )
-
-
-ALL_OK = assessment()
+from safety_layer.safety_policy import ACTIONS
 
 
 def cmd(cid, kind, now_ns, target=None, expires=True, **kw):
@@ -62,23 +41,28 @@ def airborne_motion(alt=10.0):
     return m
 
 
-# -- shared configuration --------------------------------------------------
+# -- kind coverage (limit equality: test_limits_config.py) --------------------------------------------------
 
 
-def test_motion_and_safety_use_the_same_limits():
-    """README §4: 'Safety and Motion receive the same configured limits.'"""
-    lim = MotionLimits()
-    assert lim.max_horizontal_speed_mps == config.MAX_HORIZONTAL_SPEED_MPS
-    assert lim.max_vertical_speed_mps == config.MAX_VERTICAL_SPEED_MPS
-    assert lim.max_yaw_rate_dps == config.MAX_YAW_RATE_DPS
-    assert lim.max_altitude_m == config.ALTITUDE_CEILING_M
-    assert lim.geofence_radius_m == config.GEOFENCE_RADIUS_M
+#: Kinds Motion accepts that Safety has not mapped yet. Each one is a change
+#: requested from the Safety team; remove it here once that change lands.
+PENDING_SAFETY_KINDS = {K.SET_VELOCITY}
+PENDING_SAFETY = pytest.mark.xfail(
+    strict=True,
+    reason="pending Safety team: map SET_VELOCITY to 'tracking' and drop the velocity "
+           "in _safety_command (see the Safety request doc); remove this marker then",
+)
 
 
 def test_safety_rules_on_every_kind_motion_accepts():
     """A Motion kind Safety has no permission for would always be held."""
-    assert set(KIND_TO_ACTION) == set(CONTRACT_KINDS)
+    assert set(KIND_TO_ACTION) == set(CONTRACT_KINDS) - PENDING_SAFETY_KINDS
     assert set(KIND_TO_ACTION.values()) <= set(ACTIONS)
+
+
+@PENDING_SAFETY
+def test_safety_maps_the_pending_kinds():
+    assert PENDING_SAFETY_KINDS <= set(KIND_TO_ACTION)
 
 
 # -- pass-through ------------------------------------------------------------
@@ -101,18 +85,23 @@ def test_targetless_flight_kinds_are_allowed(kind):
     assert decision.allowed
 
 
-@pytest.mark.parametrize("kind,target", [
-    (K.MOVE_TO, Pose(5.0, 0.0, 10.0, 0.0)),
-    (K.SET_YAW, Pose(0.0, 0.0, 10.0, 90.0)),
+@pytest.mark.parametrize("kind,target,velocity", [
+    (K.MOVE_TO, Pose(5.0, 0.0, 10.0, 0.0), None),
+    (K.SET_YAW, Pose(0.0, 0.0, 10.0, 90.0), None),
+    pytest.param(K.SET_VELOCITY, None, Velocity(1.0, 0.0, 0.0), marks=PENDING_SAFETY),
 ])
-def test_move_to_and_set_yaw_follow_the_tracking_permission(kind, target):
+def test_move_to_set_yaw_and_velocity_follow_the_tracking_permission(kind, target, velocity):
+    assert KIND_TO_ACTION[kind] == KIND_TO_ACTION[K.TRACK_TARGET] == "tracking"
     m = airborne_motion()
-    out, decision = check_for_motion(cmd("x-1", kind, 0, target=target), ALL_OK, 0)
-    assert decision.allowed and m.submit(out, 0).accepted
+    c = cmd("x-1", kind, 0, target=target, velocity=velocity)
+    out, decision = check_for_motion(c, ALL_OK, 0)
+    assert decision.allowed and out is c and m.submit(out, 0).accepted
 
     blocked = assessment(blocked=("tracking",))
-    out, decision = check_for_motion(cmd("x-2", kind, 0, target=target), blocked, 0)
-    assert "action_not_permitted" in decision.reasons and out.kind == K.HOVER
+    out, decision = check_for_motion(cmd("x-2", kind, 0, target=target, velocity=velocity), blocked, 0)
+    assert "action_not_permitted" in decision.reasons
+    assert out.kind == K.HOVER and out.velocity is None
+    assert m.submit(out, 0).accepted, "Motion must accept Safety's hold replacement"
 
 
 # -- replacements Motion must accept ----------------------------------------------
@@ -139,23 +128,21 @@ def test_blocked_tracking_becomes_a_hover_motion_accepts_and_stops():
     assert m.pose == held  # old target no longer pulling
 
 
-def test_emergency_becomes_emergency_land_motion_accepts():
+@pytest.mark.parametrize("verdict, kind, reason", [
+    (assessment(emergency=True), K.EMERGENCY_LAND, "emergency"),
+    (assessment(blocked=("tracking", "hold")), K.LAND, None),   # no hold permission
+])
+def test_emergency_or_no_hold_permission_becomes_a_lifecycle_landing_motion_accepts(
+        verdict, kind, reason):
     m = airborne_motion()
     c = cmd("trk-1", K.TRACK_TARGET, 0, target=Pose(10.0, 0.0, 10.0, 0.0))
-    out, decision = check_for_motion(c, assessment(emergency=True), 0)
-    assert not decision.allowed and "emergency" in decision.reasons
-    assert out.kind == K.EMERGENCY_LAND and out.expires_ns is None
-    assert m.submit(out, 0).accepted
-    assert m.emergency_landing
-
-
-def test_no_hold_permission_becomes_a_land_motion_accepts():
-    m = airborne_motion()
-    c = cmd("trk-1", K.TRACK_TARGET, 0, target=Pose(10.0, 0.0, 10.0, 0.0))
-    out, decision = check_for_motion(c, assessment(blocked=("tracking", "hold")), 0)
+    out, decision = check_for_motion(c, verdict, 0)
     assert not decision.allowed
-    assert out.kind == K.LAND and out.expires_ns is None
+    if reason is not None:
+        assert reason in decision.reasons
+    assert out.kind == kind and out.expires_ns is None
     assert m.submit(out, 0).accepted
+    assert m.emergency_landing is (kind == K.EMERGENCY_LAND)
 
 
 def test_repeated_hold_replacement_is_a_renewal():

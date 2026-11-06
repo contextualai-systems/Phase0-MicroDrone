@@ -8,12 +8,6 @@ breaking a speed, geofence or expiry rule along the way.
 """
 
 import math
-import sys
-from pathlib import Path
-
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
 
 import pytest
 
@@ -26,16 +20,12 @@ from motion_engine.trace_checker import TraceRecorder, check_trace
 from motion_engine.waypoints import (
     WaypointExecutor, WaypointReason as R, WaypointStatus as St,
 )
+from motion_engine.tests.motion_rig import assessment
 from safety_layer import config
-from safety_layer.safety_policy import ACTIONS, SafetyAssessment
 
 DT = 0.1
 ALT = 5.0
 ROUTE = [Pose(20.0, 0.0, ALT, 0.0), Pose(20.0, 15.0, ALT, 90.0), Pose(0.0, 15.0, 8.0, 180.0)]
-
-
-def assessment(blocked=()):
-    return SafetyAssessment(permissions={a: a not in blocked for a in ACTIONS})
 
 
 class Rig:
@@ -118,6 +108,9 @@ def test_flies_every_waypoint_in_order_and_completes(rig):
     assert p.reached == 3 and p.index is None and p.target is None
     assert reached_at == ROUTE                      # in order, exactly on each one
     assert rig.ex.command("TRACKING", rig.now) is None  # nothing more after the last
+    events = [r.event for r in rig.log.records]     # arrival logged once per waypoint
+    assert events.count("waypoint_reached") == 3
+    assert events[0] == "waypoint_route_loaded" and events[-1] == "waypoint_route_complete"
     rig.check()
 
 
@@ -142,14 +135,6 @@ def test_progress_distance_shrinks_toward_each_waypoint(rig):
         distances.append(p.distance_to_target_m)
     assert distances == sorted(distances, reverse=True)
     assert distances[0] == pytest.approx(30.0 - 5.0 * DT)
-
-
-def test_arrival_is_logged_once_per_waypoint(rig):
-    rig.ex.load("patrol", ROUTE, rig.now)
-    rig.fly()
-    events = [r.event for r in rig.log.records]
-    assert events.count("waypoint_reached") == 3
-    assert events[0] == "waypoint_route_loaded" and events[-1] == "waypoint_route_complete"
 
 
 # -- validation before anything flies --------------------------------------------

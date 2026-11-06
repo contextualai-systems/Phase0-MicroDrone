@@ -19,7 +19,8 @@ Two ways in:
 * `submit(command, now_ns)` / `feedback(now_ns)` / `step(dt, now_ns)` -- the
   shared contract from INTEGRATION_README.md §3-§4. The coordinator sends a
   `contracts.Command`, gets a `CommandAck` back immediately, advances Motion
-  exactly once per tick, and reads `VehicleFeedback`. Commands carry an ID
+  exactly once per tick, and reads `DroneState` (alias `VehicleFeedback`).
+  Commands carry an ID
   and an expiry; an expired target is replaced by a hold *before* the next
   movement step, so a stale target can never keep flying.
 * The direct methods (`arm()`, `move_to()`, `hover()` ...) -- still here for
@@ -69,26 +70,36 @@ try:
     from motion_engine.contracts import (
         CONTRACT_KINDS,
         LANDING_KINDS,
+        VELOCITY_KINDS,
         Command,
         CommandAck,
         CommandStatus,
+        DroneState,
+        FlightMode,
         LogSink,
         MotionCommandType,
+        Orientation,
         Pose,
         Reason,
+        Velocity,
         VehicleFeedback,
     )
 except ModuleNotFoundError:  # pragma: no cover -- only motion_engine/ on sys.path
     from contracts import (  # type: ignore[no-redef]
         CONTRACT_KINDS,
         LANDING_KINDS,
+        VELOCITY_KINDS,
         Command,
         CommandAck,
         CommandStatus,
+        DroneState,
+        FlightMode,
         LogSink,
         MotionCommandType,
+        Orientation,
         Pose,
         Reason,
+        Velocity,
         VehicleFeedback,
     )
 
@@ -97,7 +108,7 @@ except ModuleNotFoundError:  # pragma: no cover -- only motion_engine/ on sys.pa
 # `from motion_engine.motion_stubs import Pose` imports keep working.
 __all__ = [
     "GROUND_Z_M", "AIRBORNE_THRESHOLD_M", "Pose", "MotionCommandType",
-    "MotionCommand", "MotionLimits", "MotionStub", "wrap_180", "wrap_360",
+    "MotionCommand", "MotionLimits", "MotionStub", "Velocity", "wrap_180", "wrap_360",
 ]
 
 
@@ -164,6 +175,8 @@ class MotionCommand:
     #: `submit()` rejects instead of clamping).
     clamped: bool = False
     requested: Optional[Pose] = None
+    #: The velocity setpoint for SET_VELOCITY (target is None then).
+    velocity: Optional[Velocity] = None
 
 
 @dataclass
@@ -192,6 +205,11 @@ class MotionLimits:
     #: Synthetic emergency descent rate (m/s). Deliberately gentle: in Phase-0
     #: "emergency" means "the decision layer gave up", not "motors failed".
     emergency_descent_mps: float = 1.0
+    #: Link-loss failsafe (simulation ns): after this long in `expired_hold`
+    #: with no new accepted command, an airborne, armed vehicle lands in
+    #: place. Read from Safety's `COMM_LOSS_LAND_TIMEOUT_NS` when the config
+    #: defines it; until then this default applies.
+    comm_loss_land_timeout_ns: int = 10_000_000_000
 
     @classmethod
     def from_config(cls, source: Any = None) -> "MotionLimits":
@@ -205,8 +223,10 @@ class MotionLimits:
 
         `source` is any object with the config's attribute names (a module or
         a namespace); `None` means `safety_layer.config`. Fields the config
-        does not define (`min_altitude_m`, and `emergency_descent_mps` unless
-        the config adds `EMERGENCY_DESCENT_MPS`) keep the defaults above.
+        does not define (`min_altitude_m`, and `emergency_descent_mps` /
+        `comm_loss_land_timeout_ns` unless the config adds
+        `EMERGENCY_DESCENT_MPS` / `COMM_LOSS_LAND_TIMEOUT_NS`) keep the
+        defaults above.
         `yaw_tolerance_deg` comes from `DOCK_YAW_TOLERANCE_DEG`, the one yaw
         tolerance in the README §5 table.
         """
@@ -224,6 +244,12 @@ class MotionLimits:
             yaw_tolerance_deg=float(source.DOCK_YAW_TOLERANCE_DEG),
             emergency_descent_mps=float(
                 getattr(source, "EMERGENCY_DESCENT_MPS", cls.emergency_descent_mps)
+            ),
+            # Motion owns this default until Safety adds the constant to its
+            # config (requested from the Safety team); same pattern as
+            # EMERGENCY_DESCENT_MPS above.
+            comm_loss_land_timeout_ns=int(
+                getattr(source, "COMM_LOSS_LAND_TIMEOUT_NS", cls.comm_loss_land_timeout_ns)
             ),
         )
 
@@ -295,6 +321,19 @@ class MotionStub:
         self._dispatching: Optional[Command] = None
         self._seen_ids: Set[str] = set()
         self._expired_hold: bool = False
+        # Simulation time the current expired hold began (None = not holding
+        # after an expiry), and whether Motion is landing on its own because
+        # the hold outlasted `limits.comm_loss_land_timeout_ns`.
+        self._expired_since_ns: Optional[int] = None
+        self._comm_loss_landing: bool = False
+
+        # Velocity mode: a SET_VELOCITY setpoint is flown instead of a target
+        # pose (`_target` is None while this is set). `_boundary_reason` is the
+        # stable Reason of the limit a velocity run stopped at, if any.
+        self._velocity_sp: Optional[Velocity] = None
+        self._boundary_reason: Optional[str] = None
+        # Estimated velocity: displacement over the last good step.
+        self._est_velocity: Velocity = Velocity(0.0, 0.0, 0.0, 0.0)
 
     # -- read-only state ----------------------------------------------
 
@@ -321,6 +360,21 @@ class MotionStub:
     @property
     def history(self) -> List[MotionCommand]:
         return list(self._history)
+
+    @property
+    def velocity_setpoint(self) -> Optional[Velocity]:
+        """The SET_VELOCITY setpoint being flown, or None in position mode."""
+        return self._velocity_sp
+
+    @property
+    def velocity(self) -> Velocity:
+        """Estimated velocity: displacement over the last step (m/s, deg/s)."""
+        return self._est_velocity
+
+    @property
+    def comm_loss_landing(self) -> bool:
+        """True from the comm-loss escalation until the next accepted command."""
+        return self._comm_loss_landing
 
     @property
     def emergency_landing(self) -> bool:
@@ -447,6 +501,15 @@ class MotionStub:
         if kind == MotionCommandType.DISARM and self.airborne:
             return reject(Reason.AIRBORNE)
 
+        if kind in VELOCITY_KINDS:
+            if not self.airborne:
+                return reject(Reason.NOT_AIRBORNE, "take off before flying a velocity")
+            problem = self._velocity_limit_problem(
+                command.velocity, command.max_horizontal_speed_mps, command.max_vertical_speed_mps
+            )
+            if problem is not None:
+                return reject(Reason.VELOCITY_OUTSIDE_LIMITS, problem)
+
         requested = self._requested_pose(kind, command.target)
         if requested is not None:
             landing = kind == MotionCommandType.DESCEND_TO_DOCK
@@ -457,7 +520,7 @@ class MotionStub:
         self._seen_ids.add(command.command_id)
         self._dispatching = command
         try:
-            ok = self._dispatch(kind, command.target)
+            ok = self._dispatch(kind, command.target, command.velocity)
         finally:
             self._dispatching = None
         if not ok:  # pragma: no cover -- every refusal is pre-checked above
@@ -469,29 +532,54 @@ class MotionStub:
         self._active_contract = command
         return self._ack(command, True, Reason.ACCEPTED, now_ns)
 
-    def feedback(self, now_ns: Optional[int] = None) -> VehicleFeedback:
-        """The `vehicle` snapshot section. Read-only: never changes state."""
+    def feedback(self, now_ns: Optional[int] = None) -> DroneState:
+        """The `vehicle` snapshot section (the DroneState contract).
+
+        Read-only: never changes state.
+        """
         # PHASE-1 HOOK: on hardware every field here is read, not computed:
         #   pose from XRCE /fmu/out/vehicle_local_position (NED -> ENU as in
         #   step()), armed from /fmu/out/vehicle_status.arming_state, grounded
         #   and landing_settled from /fmu/out/vehicle_land_detected (landed,
         #   maybe_landed), and `valid` from xy_valid / z_valid plus message age.
+        #   velocity from vehicle_local_position vx/vy/vz (NED -> ENU:
+        #   vx_enu = vy_ned, vy_enu = vx_ned, vz_enu = -vz_ned; check v_xy_valid /
+        #   v_z_valid), orientation from /fmu/out/vehicle_attitude q (FRD/NED ->
+        #   roll, -pitch, 90 - yaw for FLU/ENU), and flight_mode from
+        #   /fmu/out/vehicle_status.nav_state (OFFBOARD, AUTO_LOITER, AUTO_LAND,
+        #   AUTO_TAKEOFF ...) or MAVLink HEARTBEAT custom_mode.
         t = self._target
         p = self._pose
         if self._emergency:
             status = CommandStatus.EMERGENCY_DESCENT
+        elif self._comm_loss_landing and not self.landing_settled:
+            status = CommandStatus.COMM_LOSS_LANDING
         elif self._expired_hold:
             status = CommandStatus.EXPIRED_HOLD
+        elif self._boundary_reason is not None:
+            status = CommandStatus.BOUNDARY_HOLD
         elif self.landing_settled:
             status = CommandStatus.LANDED
+        elif self._velocity_sp is not None:
+            status = CommandStatus.IN_PROGRESS
         elif t is None:
             status = CommandStatus.NONE
         elif self.at_target():
             status = CommandStatus.ARRIVED
         else:
             status = CommandStatus.IN_PROGRESS
+        if status == CommandStatus.EXPIRED_HOLD:
+            status_reason: Optional[str] = Reason.COMMAND_EXPIRED
+        elif status == CommandStatus.BOUNDARY_HOLD:
+            status_reason = self._boundary_reason
+        elif self._comm_loss_landing:
+            # During the descent (`comm_loss_landing`) and after touchdown
+            # (`landed`) until the next accepted command, like `reason` below.
+            status_reason = Reason.COMM_LOSS_LANDING
+        else:
+            status_reason = None
         active = self._active
-        return VehicleFeedback(
+        return DroneState(
             timestamp_ns=self._now_ns if now_ns is None else now_ns,
             pose=p,
             armed=self._armed,
@@ -508,6 +596,14 @@ class MotionStub:
             horizontal_error_m=p.horizontal_distance_to(t) if t is not None else None,
             vertical_error_m=(t.z - p.z) if t is not None else None,
             yaw_error_deg=abs(wrap_180(t.yaw_deg - p.yaw_deg)) if t is not None else None,
+            velocity=self._est_velocity,
+            orientation=Orientation(0.0, 0.0, p.yaw_deg),  # kinematic stub: no roll/pitch
+            flight_mode=self._flight_mode(),
+            target_velocity=self._velocity_sp,
+            status_reason=status_reason,
+            # Stays set after touchdown (status `landed`) so a coordinator that
+            # comes back can tell this landing was Motion's, not its own.
+            reason=Reason.COMM_LOSS_LANDING if self._comm_loss_landing else None,
         )
 
     # -- arming ---------------------------------------------------------
@@ -539,6 +635,7 @@ class MotionStub:
         #   "already disarmed" in /fmu/out/vehicle_status as success.
         self._armed = False
         self._target = None
+        self._velocity_sp = None
         self._arrival_logged = True
         self._accept(MotionCommandType.DISARM, None, 0.0, "disarm", {})
         return True
@@ -708,6 +805,53 @@ class MotionStub:
         )
         return True
 
+    def set_velocity(
+        self, vx: float, vy: float, vz: float, yaw_rate_deg_s: Optional[float] = None
+    ) -> bool:
+        """Fly a velocity setpoint (m/s, local ENU) until replaced or expired.
+
+        `yaw_rate_deg_s=None` keeps the current heading. Motion owns velocity
+        control; the setpoint has no target, so each `step()` checks the
+        geofence and ceiling/floor itself: if the next step would cross one,
+        the drone stops exactly on the boundary and holds there
+        (`status = boundary_hold`, `status_reason` names the limit, log
+        `velocity_boundary`). That is a reported stop, not a silent clamp.
+
+        Refused (never clamped) when not airborne, non-finite, or faster than
+        the limits -- the direct API has no ack, so the refusal is logged.
+        """
+        fields = {"vx": vx, "vy": vy, "vz": vz, "yaw_rate": yaw_rate_deg_s}
+        if not self._precheck("set_velocity", fields):
+            return False
+        v = Velocity(vx, vy, vz, yaw_rate_deg_s)
+        if not v.is_finite():
+            self._log("set_velocity", fields, decision="rejected_invalid_command")
+            return False
+        if not self.airborne:
+            self._log("set_velocity", fields, decision=f"rejected_{Reason.NOT_AIRBORNE}")
+            return False
+        if self._velocity_limit_problem(v, None, None) is not None:
+            self._log("set_velocity", fields, decision=f"rejected_{Reason.VELOCITY_OUTSIDE_LIMITS}")
+            return False
+        # PHASE-1 HOOK: streamed offboard velocity -> XRCE /fmu/in/trajectory_setpoint
+        #   with position = [NaN, NaN, NaN], velocity = [vy, vx, -vz] (ENU -> NED:
+        #   north, east, down), yaw = NaN and yawspeed = radians(-yaw_rate_deg_s)
+        #   (CCW-up ENU -> CW-down NED flips the sign; NaN if None = hold heading),
+        #   paired with /fmu/in/offboard_control_mode (velocity=True,
+        #   position=False) at >= 2 Hz. MAVLink fallback:
+        #   SET_POSITION_TARGET_LOCAL_NED (#84), coordinate_frame =
+        #   MAV_FRAME_LOCAL_NED, type_mask = ignore position/accel/yaw (0x05C7, or
+        #   0x0DC7 to also ignore yaw_rate). PX4 has no geofence-stop for raw
+        #   velocity setpoints in offboard (GF_ACTION is a failsafe, not a stop
+        #   at the fence), so the boundary check in step() stays on the
+        #   companion side, using vehicle_local_position.
+        self._set_target_velocity(v)
+        self._accept(
+            MotionCommandType.SET_VELOCITY, None, v.horizontal_speed_mps, "set_velocity",
+            fields, velocity=v,
+        )
+        return True
+
     def goto_dock_approach(self, dock: Pose, approach_altitude_m: float = 5.0) -> bool:
         """Fly to the point `approach_altitude_m` directly above the dock."""
         fields = {"x": dock.x, "y": dock.y, "z": dock.z + approach_altitude_m}
@@ -755,18 +899,26 @@ class MotionStub:
 
     def land(self) -> bool:
         """Land in place (straight down to the ground)."""
-        if not self._precheck("land", {"x": self._pose.x, "y": self._pose.y}):
-            return False
-        target = Pose(self._pose.x, self._pose.y, GROUND_Z_M, self._pose.yaw_deg)
         # PHASE-1 HOOK: MAVLink COMMAND_LONG MAV_CMD_NAV_LAND (21), param2 = 0
         #   (no precision), param4 = NaN (keep yaw), param5/6 = NaN (land here),
         #   or MAV_CMD_DO_SET_MODE -> AUTO.LAND. Operator command -> MAVLink.
         #   PX4 auto-disarms after touchdown (COM_DISARM_LAND); this stub does
         #   not -- the caller disarms explicitly.
+        return self._land_in_place("land")
+
+    def _land_in_place(
+        self, name: str, extra: Optional[Dict[str, Any]] = None, decision: Optional[str] = None
+    ) -> bool:
+        """The land path shared by `land()` and the comm-loss escalation."""
+        if not self._precheck(name, {"x": self._pose.x, "y": self._pose.y}):
+            return False
+        target = Pose(self._pose.x, self._pose.y, GROUND_Z_M, self._pose.yaw_deg)
+        # (PX4 mapping: see the PHASE-1 HOOK in land().)
         self._set_target(target, self.limits.max_horizontal_speed_mps, self.limits.max_vertical_speed_mps)
         self._accept(
-            MotionCommandType.LAND, target, 0.0, "land",
-            {"x": target.x, "y": target.y, "z": target.z},
+            MotionCommandType.LAND, target, 0.0, name,
+            {"x": target.x, "y": target.y, "z": target.z, **(extra or {})},
+            decision=decision,
         )
         return True
 
@@ -832,6 +984,7 @@ class MotionStub:
         if now_ns is not None:
             self._now_ns = max(self._now_ns, now_ns)
             self._expire_if_needed(now_ns)
+            self._escalate_if_comm_lost(now_ns)
         if not _is_real(dt) or not math.isfinite(dt):
             # A NaN dt would poison the pose for the rest of the run (and
             # feedback would still say valid=True); an inf dt would jump the
@@ -839,8 +992,13 @@ class MotionStub:
             # Expiry above still ran: a bad dt must not keep a stale target alive.
             self._log("bad_dt", {"dt": repr(dt)}, decision="ignored_bad_dt")
             return self._pose
-        if dt <= 0.0 or self._target is None or not self._armed:
+        if dt <= 0.0:
             return self._pose
+        if not self._armed or (self._target is None and self._velocity_sp is None):
+            self._est_velocity = Velocity(0.0, 0.0, 0.0, 0.0)
+            return self._pose
+        if self._velocity_sp is not None:
+            return self._step_velocity(dt)
 
         p, t = self._pose, self._target
 
@@ -864,6 +1022,7 @@ class MotionStub:
         yaw = t.yaw_deg if abs(dyaw) <= max_yaw + _SNAP_EPS_M else wrap_360(p.yaw_deg + math.copysign(max_yaw, dyaw))
 
         self._pose = Pose(x, y, z, wrap_360(yaw))
+        self._est_velocity = self._velocity_between(p, self._pose, dt)
 
         if not self._arrival_logged and self.at_target():
             self._arrival_logged = True
@@ -889,6 +1048,120 @@ class MotionStub:
 
     # -- internals ------------------------------------------------------
 
+    def _step_velocity(self, dt: float) -> Pose:
+        """One step of velocity mode, stopping on the first limit crossed."""
+        # PHASE-1 HOOK: on hardware PX4 integrates the velocity; this method
+        #   becomes "read /fmu/out/vehicle_local_position, predict pose + v*dt,
+        #   and if that crosses the fence/ceiling publish a zero-velocity (or
+        #   position-hold) /fmu/in/trajectory_setpoint at the boundary".
+        p, v, lim = self._pose, self._velocity_sp, self.limits
+        dx, dy, dz = v.vx * dt, v.vy * dt, v.vz * dt
+        frac, why = 1.0, None
+
+        floor = max(lim.min_altitude_m, GROUND_Z_M)
+        if dz > 0.0 and p.z + dz > lim.max_altitude_m:
+            s = max(0.0, (lim.max_altitude_m - p.z) / dz)
+            if s < frac:
+                frac, why = s, Reason.ALTITUDE_CEILING_BOUNDARY
+        if dz < 0.0 and p.z + dz < floor:
+            s = max(0.0, (floor - p.z) / dz)
+            if s < frac:
+                frac, why = s, Reason.ALTITUDE_FLOOR_BOUNDARY
+        rx, ry = p.x - self.home.x, p.y - self.home.y
+        R = lim.geofence_radius_m
+        if math.hypot(rx + dx, ry + dy) > R:
+            # Solve |r + s*d| = R for the first s in [0, 1].
+            a = dx * dx + dy * dy
+            b = 2.0 * (rx * dx + ry * dy)
+            c = rx * rx + ry * ry - R * R
+            disc = max(0.0, b * b - 4.0 * a * c)
+            s = 0.0 if c >= 0.0 else (-b + math.sqrt(disc)) / (2.0 * a)
+            s = min(max(s, 0.0), 1.0)
+            if s < frac:
+                frac, why = s, Reason.GEOFENCE_BOUNDARY
+
+        x, y, z = p.x + dx * frac, p.y + dy * frac, p.z + dz * frac
+        if why == Reason.ALTITUDE_CEILING_BOUNDARY:
+            z = lim.max_altitude_m
+        elif why == Reason.ALTITUDE_FLOOR_BOUNDARY:
+            z = floor
+        elif why == Reason.GEOFENCE_BOUNDARY:
+            r = math.hypot(x - self.home.x, y - self.home.y)
+            if r > R:  # float residue only: land exactly on the fence
+                x = self.home.x + (x - self.home.x) * R / r
+                y = self.home.y + (y - self.home.y) * R / r
+        yaw = p.yaw_deg
+        if v.yaw_rate_deg_s is not None:
+            yaw = wrap_360(p.yaw_deg + v.yaw_rate_deg_s * dt * frac)
+        self._pose = Pose(x, y, z, yaw)
+        self._est_velocity = self._velocity_between(p, self._pose, dt)
+
+        if why is not None:
+            cmd = self._active_contract
+            here = self._pose
+            self._set_target(here, self._h_speed, self._v_speed)  # clears velocity mode
+            self._arrival_logged = True
+            rec = MotionCommand(MotionCommandType.HOVER, here, 0.0, self._clock(), note="boundary_hold")
+            self._active = rec
+            self._history.append(rec)
+            # The velocity command is finished: renewing its ID is rejected
+            # (command_id_reused), so the coordinator has to replan.
+            self._active_contract = None
+            self._boundary_reason = why
+            self._log(
+                "velocity_boundary",
+                {
+                    "command_id": cmd.command_id if cmd is not None else None,
+                    "limit": why, "x": here.x, "y": here.y, "z": here.z,
+                },
+                decision="hold_at_boundary",
+            )
+        return self._pose
+
+    @staticmethod
+    def _velocity_between(a: Pose, b: Pose, dt: float) -> Velocity:
+        return Velocity(
+            (b.x - a.x) / dt, (b.y - a.y) / dt, (b.z - a.z) / dt,
+            wrap_180(b.yaw_deg - a.yaw_deg) / dt,
+        )
+
+    def _velocity_limit_problem(
+        self, v: Optional[Velocity], h_cap: Optional[float], v_cap: Optional[float]
+    ) -> Optional[str]:
+        """Detail text if `v` is faster than the limits (or a command's lower
+        caps), else None. Rejected, never scaled down."""
+        if v is None or not v.is_finite():
+            return "non-finite velocity"
+        lim = self.limits
+        max_h = lim.max_horizontal_speed_mps if h_cap is None else min(lim.max_horizontal_speed_mps, h_cap)
+        max_v = lim.max_vertical_speed_mps if v_cap is None else min(lim.max_vertical_speed_mps, v_cap)
+        if v.horizontal_speed_mps > max_h:
+            return f"horizontal {v.horizontal_speed_mps:.3f} m/s > {max_h} m/s"
+        if abs(v.vz) > max_v:
+            return f"vertical {abs(v.vz):.3f} m/s > {max_v} m/s"
+        if v.yaw_rate_deg_s is not None and abs(v.yaw_rate_deg_s) > lim.max_yaw_rate_dps:
+            return f"yaw rate {abs(v.yaw_rate_deg_s):.3f} deg/s > {lim.max_yaw_rate_dps} deg/s"
+        return None
+
+    def _flight_mode(self) -> FlightMode:
+        if not self._armed:
+            return FlightMode.DISARMED
+        if self._emergency:
+            return FlightMode.EMERGENCY_LAND
+        if self._velocity_sp is not None:
+            return FlightMode.VELOCITY
+        a = self._active
+        K = MotionCommandType
+        if a is None or a.type in (K.ARM, K.DISARM):
+            return FlightMode.ON_GROUND if self.grounded else FlightMode.HOLD
+        if a.type == K.TAKEOFF:
+            return FlightMode.TAKEOFF
+        if a.type in (K.LAND, K.DESCEND_TO_DOCK, K.EMERGENCY_LAND):
+            return FlightMode.LAND
+        if a.type in (K.HOVER, K.STOP):
+            return FlightMode.HOLD
+        return FlightMode.POSITION
+
     def _requested_pose(self, kind: MotionCommandType, target: Optional[Pose]) -> Optional[Pose]:
         """The pose a contract command would ask for, before clamping."""
         if target is None:
@@ -904,7 +1177,9 @@ class MotionStub:
             return target
         return None  # SET_YAW: yaw only, nothing to clamp
 
-    def _dispatch(self, kind: MotionCommandType, t: Optional[Pose]) -> bool:
+    def _dispatch(
+        self, kind: MotionCommandType, t: Optional[Pose], v: Optional[Velocity] = None
+    ) -> bool:
         """Route a validated contract command to the matching direct method."""
         K = MotionCommandType
         if kind == K.ARM:
@@ -919,6 +1194,8 @@ class MotionStub:
             return self.track_position(t.x, t.y, t.z, yaw_deg=t.yaw_deg)
         if kind == K.SET_YAW:
             return self.set_yaw(t.yaw_deg)
+        if kind == K.SET_VELOCITY:
+            return self.set_velocity(v.vx, v.vy, v.vz, v.yaw_rate_deg_s)
         if kind == K.HOVER:
             return self.hover()
         if kind == K.STOP:
@@ -947,7 +1224,7 @@ class MotionStub:
         ):
             return
         self._active_contract = None
-        if not self._armed or self._target is None:
+        if not self._armed or (self._target is None and self._velocity_sp is None):
             return
         if self.landing_settled:
             # The landing already finished on the ground: there is nothing left
@@ -968,11 +1245,62 @@ class MotionStub:
         self._active = rec
         self._history.append(rec)
         self._expired_hold = True
+        self._expired_since_ns = now_ns
         self._log(
             "command_expired",
             {"command_id": cmd.command_id, "x": here.x, "y": here.y, "z": here.z},
             decision="hold_in_place",
         )
+
+    def _escalate_if_comm_lost(self, now_ns: int) -> None:
+        """Comm-loss failsafe: an expired hold that outlasts the timeout lands.
+
+        The 0.2 s command validity turns a lost coordinator into a hold in
+        place (`_expire_if_needed`). Holding forever would hover until the
+        battery dies, and Motion cannot fly home on its own (no Navigation,
+        no Safety, no battery reading), so after
+        `limits.comm_loss_land_timeout_ns` of continuous expired hold it
+        lands straight down where it is, through the ordinary land path.
+
+        Not a latch (unlike EMERGENCY_LAND): any command `submit()` accepts
+        cancels it, because acceptance already means fresh, valid and not
+        expired, i.e. the coordinator is back and Safety has re-checked what
+        it sent. A replayed or late command is rejected and cannot cancel it.
+        Only an airborne, armed vehicle escalates; a grounded or disarmed one
+        has nothing to land, and a settled landing never enters expired_hold.
+        Simulation time only (`now_ns`); never wall time.
+        """
+        # PHASE-1 HOOK: on hardware this is PX4's own link-loss failsafe, so it
+        #   is configured, not coded here. Offboard setpoint-stream loss
+        #   (COM_OF_LOSS_T) triggers COM_OBL_RC_ACT; data-link (GCS/MAVLink)
+        #   loss after COM_DL_LOSS_T triggers NAV_DLL_ACT. Set both actions to
+        #   Land (land in place, as here) and COM_DL_LOSS_T to
+        #   comm_loss_land_timeout_ns; check the enum values against the
+        #   pinned PX4 release. Verify in SITL that a resumed stream / new
+        #   offboard command regains control the way an accepted submit() does.
+        since = self._expired_since_ns
+        if (
+            not self._expired_hold
+            or since is None
+            or self._comm_loss_landing
+            or self._emergency
+            or not self._armed
+            or not self.airborne
+            or now_ns - since < self.limits.comm_loss_land_timeout_ns
+        ):
+            return
+        ok = self._land_in_place(
+            "comm_loss_landing",
+            {
+                "held_s": round((now_ns - since) / 1e9, 3),
+                "timeout_s": self.limits.comm_loss_land_timeout_ns / 1e9,
+                "z_start": self._pose.z,
+                "since_ns": since,
+            },
+            decision="land_in_place",
+        )
+        if ok:
+            self._comm_loss_landing = True
 
     def _ack(
         self, command: Any, accepted: bool, reason: str, now_ns: Any, detail: Optional[str] = None
@@ -1054,8 +1382,17 @@ class MotionStub:
         if self._target is None or self._target != target:
             self._arrival_logged = False
         self._target = target
+        self._velocity_sp = None  # any position target ends velocity mode
         self._h_speed = h_speed
         self._v_speed = v_speed
+
+    def _set_target_velocity(self, v: Velocity) -> None:
+        """Enter velocity mode: no target pose, caps reset to the limits."""
+        self._target = None
+        self._velocity_sp = v
+        self._arrival_logged = True  # nothing to arrive at
+        self._h_speed = self.limits.max_horizontal_speed_mps
+        self._v_speed = self.limits.max_vertical_speed_mps
 
     def _accept(
         self,
@@ -1068,16 +1405,21 @@ class MotionStub:
         clamped: bool = False,
         requested: Optional[Pose] = None,
         decision: Optional[str] = None,
+        velocity: Optional[Velocity] = None,
     ) -> None:
         contract = self._dispatching
         cmd = MotionCommand(
             kind, target, speed, self._clock(), note=name,
             command_id=contract.command_id if contract is not None else None,
             clamped=clamped, requested=requested if clamped else None,
+            velocity=velocity,
         )
         self._active = cmd
         self._history.append(cmd)
         self._expired_hold = False
+        self._boundary_reason = None
+        self._expired_since_ns = None
+        self._comm_loss_landing = False
         if contract is None:
             # A direct call supersedes whatever the coordinator last sent.
             self._active_contract = None

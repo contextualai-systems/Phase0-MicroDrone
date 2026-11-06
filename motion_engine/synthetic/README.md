@@ -38,9 +38,9 @@ consumer does not assume "commanded hover" means "not moving", and
 ## The model (deliberately simple)
 
 - Constant speed while a direction is held: **1 m/s** horizontal, **0.5 m/s** vertical, **45°/s** yaw. Stops instantly when the move ends.
-- Wind (`drift` only) adds a constant velocity while airborne. It moves the drone but not the motor columns.
+- Wind (`drift` only) adds a constant velocity while airborne. It moves the drone even though the commanded direction stays `hover`.
 - Forward/back/left/right are **relative to where the drone faces** — after a 90° yaw-left, "forward" goes north.
-- Motor columns come from the real mixer, `commands/motor_commands.direction_to_motor_command`.
+- Positions are `motion_engine.contracts.Pose` values. There are no motor/throttle columns: Phase 0 never commands motors (PX4 stabilises), and the only command shape Motion accepts is `contracts.Command`. `Direction` is just this script's scenario vocabulary.
 - Frame matches `motion_stubs.py`: x = east, y = north, z = up (m); yaw 0 = east, counter-clockwise positive.
 
 ## Metadata header
@@ -87,7 +87,6 @@ df = pd.read_csv("motion_engine/motion_logs/square.csv", comment="#")
 | `x_m`, `y_m`, `z_m` | position (m) |
 | `yaw_deg` | heading, 0–360 |
 | `vx_mps`, `vy_mps`, `vz_mps`, `yaw_rate_dps` | the drone's actual velocity this sample (world frame, includes wind) |
-| `motor_fl`, `motor_fr`, `motor_rl`, `motor_rr` | stub throttle per motor (0–100, hover = 50) |
 
 ## Expected output
 
@@ -107,13 +106,12 @@ plot -> motion_engine/motion_logs/overview.png
 
 Every hand-written scenario ends back at the origin; `drift` and
 `random_walk` do not, which is the point. The last rows of `square.csv`
-show the landing (motors drop to 35 while descending, back to 50 = hover
-idle once stopped):
+show the landing (descending at 0.5 m/s, then stopped on the ground):
 
 ```text
-t_s,timestamp_ns,step,direction,x_m,y_m,z_m,yaw_deg,vx_mps,vy_mps,vz_mps,yaw_rate_dps,motor_fl,motor_fr,motor_rl,motor_rr
-25.9,25900000000,11,down,0.0,0.0,0.05,0.0,0.0,0.0,-0.5,0.0,35.0,35.0,35.0,35.0
-26.0,26000000000,12,hover,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,50.0,50.0,50.0,50.0
+t_s,timestamp_ns,step,direction,x_m,y_m,z_m,yaw_deg,vx_mps,vy_mps,vz_mps,yaw_rate_dps
+25.9,25900000000,11,down,0.0,0.0,0.05,0.0,0.0,0.0,-0.5,0.0
+26.0,26000000000,12,hover,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
 ```
 
 `overview.png` (written when matplotlib is installed) has one row per
