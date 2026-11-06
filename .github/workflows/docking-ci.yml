@@ -1,0 +1,67 @@
+name: Docking CI
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/docking-ci.yml'
+      - 'docking/**'
+      - 'motion_engine/**'
+      - 'safety_layer/**'
+      - 'tests/test_docking*.py'
+      - 'tests/test_command_check.py'
+      - 'tests/test_safety_policy.py'
+      - 'tests/__init__.py'
+      - 'INTEGRATION_README.md'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/docking-ci.yml'
+      - 'docking/**'
+      - 'motion_engine/**'
+      - 'safety_layer/**'
+      - 'tests/test_docking*.py'
+      - 'tests/test_command_check.py'
+      - 'tests/test_safety_policy.py'
+      - 'tests/__init__.py'
+      - 'INTEGRATION_README.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docking-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docking-tests:
+    name: Docking tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.12', '3.14']
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          submodules: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # These suites use only the standard library and local synthetic modules.
+      - name: Run docking tests
+        run: python -B -m unittest discover -s tests -p 'test_docking*.py' -v
+
+      - name: Run Safety command-check tests
+        if: ${{ !cancelled() }}
+        run: python -B -m unittest discover -s tests -p 'test_command_check.py' -v
+
+      - name: Run Safety policy tests
+        if: ${{ !cancelled() }}
+        run: python -B -m unittest discover -s tests -p 'test_safety_policy.py' -v

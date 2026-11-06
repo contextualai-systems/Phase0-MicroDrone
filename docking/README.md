@@ -137,3 +137,16 @@ stale inputs, timeout boundaries, return triggers, retries/reset, and actual
 MotionStub feedback through touchdown followed by explicit disarming. Wiring
 these values into the central coordinator and running the full mission/retry
 scenarios remains integration-team work.
+
+`tests/test_docking_hazard_cancellation.py` connects the real controller,
+Safety assessment/command check, and Motion stub in a coordinator test fixture.
+It injects cart motion, stale alignment, and revoked descent permission during
+descent, both at altitude and inside arrival tolerance just above touchdown.
+The checks require an accepted hold before that tick's movement, unchanged pose,
+no landing completion, and a latched abort after the hazard clears. A negative
+control confirms that a null proposal alone leaves the old descent running.
+
+The fixture explicitly handles a Docking abort with STOP when Safety still
+permits the active descent (Safety currently checks pad age separately from
+alignment age). This verifies the required coordinator handoff; it does not wire
+abort handling into `state_machine/run_loop.py` or create another mission loop.
