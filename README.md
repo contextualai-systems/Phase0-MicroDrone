@@ -4,8 +4,6 @@
 
 ![CONTEXTUAL·AI SYSTEMS Logo](assets/banner/ContextualAI%20logo.png)
 
-![Phase-0 QR Code](assets/qr/QR%20Code%20ContextualAI%20Systems.png)
-
 ---
 
 ## Recruitment materials
