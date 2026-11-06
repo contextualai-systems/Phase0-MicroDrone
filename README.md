@@ -2,9 +2,7 @@
 
 ### CONTEXTUAL·AI SYSTEMS — RCOS Fall 2026
 
-![CONTEXTUAL·AI SYSTEMS Logo](assets/assets/banner/ContextualAI%20logo.png)
-
-![Phase-0 QR Code](assets/qr/QR%20Code%20ContextualAI%20Systems.png)
+![CONTEXTUAL·AI SYSTEMS Logo](assets/banner/ContextualAI%20logo.png)
 
 ---
 
@@ -48,7 +46,7 @@ Phase0-MicroDrone/
 └── START_HERE.md           # Authoritative Phase 0 scope
 ```
 
-The architecture image is [Drone Centric Architecture](assets/assets/architecture/Drone%20Centric%20Architecture.png).
+The architecture image is [Drone Centric Architecture](assets/architecture/Drone%20Centric%20Architecture.png).
 
 ## Getting started
 
