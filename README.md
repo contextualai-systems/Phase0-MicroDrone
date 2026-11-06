@@ -75,6 +75,8 @@ Safety, Docking, PX4, ROS 2, or Gazebo into a single runtime.
 
 ## Contributing
 
+Module test workflows and local commands: [CI guide](docs/CI.md).
+
 Fork the repository, create a feature branch, and submit a pull request. Follow
 the contribution guidance in [CONTRIBUTING.md](CONTRIBUTING.md). Run relevant
 synthetic tests for changes to safety or movement behavior; simulation results

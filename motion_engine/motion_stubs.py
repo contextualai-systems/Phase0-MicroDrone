@@ -39,7 +39,7 @@ Link convention (motion_engine/README.md, "Our split"):
 * Operator / golf-cart style commands -- arm, disarm, takeoff, land, goto,
   mode changes -- go over **MAVLink** (`COMMAND_LONG` / `SET_POSITION_TARGET_*`).
 * High-rate streamed setpoints (a real offboard loop at 20-50 Hz, which is what
-  `track_target` becomes when it is called every tick) go over **uXRCE-DDS**:
+  `track_position` becomes when it is renewed every tick) go over **uXRCE-DDS**:
   `/fmu/in/trajectory_setpoint` paired with `/fmu/in/offboard_control_mode`.
 * Pose/state comes *back* over uXRCE-DDS (`/fmu/out/vehicle_local_position`).
 
@@ -192,6 +192,40 @@ class MotionLimits:
     #: Synthetic emergency descent rate (m/s). Deliberately gentle: in Phase-0
     #: "emergency" means "the decision layer gave up", not "motors failed".
     emergency_descent_mps: float = 1.0
+
+    @classmethod
+    def from_config(cls, source: Any = None) -> "MotionLimits":
+        """Build the limits from Safety's config, the single source of truth.
+
+        INTEGRATION_README §4 says Safety and Motion must receive the same
+        configured limits. `safety_layer/config.py` owns those numbers, so the
+        coordinator builds Motion's limits from it instead of relying on the
+        defaults above. `test_limits_config.py` asserts the defaults still
+        equal this, so a change to one side without the other fails CI.
+
+        `source` is any object with the config's attribute names (a module or
+        a namespace); `None` means `safety_layer.config`. Fields the config
+        does not define (`min_altitude_m`, and `emergency_descent_mps` unless
+        the config adds `EMERGENCY_DESCENT_MPS`) keep the defaults above.
+        `yaw_tolerance_deg` comes from `DOCK_YAW_TOLERANCE_DEG`, the one yaw
+        tolerance in the README §5 table.
+        """
+        if source is None:
+            # Imported lazily so motion_stubs has no import-time dependency on
+            # safety_layer (safety_layer already imports motion contracts).
+            from safety_layer import config as source  # type: ignore[no-redef]
+        return cls(
+            max_horizontal_speed_mps=float(source.MAX_HORIZONTAL_SPEED_MPS),
+            max_vertical_speed_mps=float(source.MAX_VERTICAL_SPEED_MPS),
+            max_yaw_rate_dps=float(source.MAX_YAW_RATE_DPS),
+            max_altitude_m=float(source.ALTITUDE_CEILING_M),
+            geofence_radius_m=float(source.GEOFENCE_RADIUS_M),
+            arrival_tolerance_m=float(source.POSITION_ARRIVAL_TOLERANCE_M),
+            yaw_tolerance_deg=float(source.DOCK_YAW_TOLERANCE_DEG),
+            emergency_descent_mps=float(
+                getattr(source, "EMERGENCY_DESCENT_MPS", cls.emergency_descent_mps)
+            ),
+        )
 
 
 # --------------------------------------------------------------------------
@@ -639,70 +673,17 @@ class MotionStub:
         )
         return True
 
-    def track_target(
-        self,
-        bearing_deg: float,
-        distance_m: float,
-        standoff_m: float = 15.0,
-        altitude_m: Optional[float] = None,
-    ) -> bool:
-        """Close to `standoff_m` from a bird seen at `bearing_deg`/`distance_m`.
-
-        `bearing_deg` is in the *world* (local ENU) yaw convention -- 0 = east,
-        CCW positive -- measured from the drone's current position, which is
-        how the synthetic world fixtures report tracking geometry. The new target is the
-        point `distance_m - standoff_m` along that bearing, facing the bird.
-        If the bird is already closer than the standoff, that distance is
-        negative and the drone backs away to restore it. `altitude_m=None`
-        keeps the current target altitude.
-        """
-        fields = {"bearing": bearing_deg, "distance": distance_m, "standoff": standoff_m}
-        if not self._precheck("track_target", fields):
-            return False
-        travel = distance_m - standoff_m
-        b = math.radians(bearing_deg)
-        base_z = self._target.z if self._target is not None else self._pose.z
-        z = base_z if altitude_m is None else altitude_m
-        requested = Pose(
-            self._pose.x + travel * math.cos(b),
-            self._pose.y + travel * math.sin(b),
-            z,
-            wrap_360(bearing_deg),
-        )
-        target, clamped = self._clamp(requested)
-        if travel > self.limits.arrival_tolerance_m:
-            decision = "close_to_standoff"
-        elif travel < -self.limits.arrival_tolerance_m:
-            decision = "back_off_to_standoff"
-        else:
-            decision = "hold_standoff"
-        # PHASE-1 HOOK: this is called every mission tick, i.e. a streamed
-        #   setpoint -> XRCE /fmu/in/trajectory_setpoint + /fmu/in/offboard_control_mode
-        #   (position=True), per the README caveat about high-rate loops. (A
-        #   low-rate fallback is MAVLink SET_POSITION_TARGET_LOCAL_NED, same
-        #   field mapping as move_to.) NED conversion:
-        #   position = [target.y, target.x, -target.z], yaw =
-        #   radians(wrap_180(90 - bearing_deg)) so the camera faces the bird.
-        #   Bearing/distance will come from the CV node over XRCE and are
-        #   camera-relative on hardware -- add the vehicle heading from
-        #   /fmu/out/vehicle_local_position before using them here.
-        fields.update({"x": target.x, "y": target.y, "z": target.z})
-        self._set_target(target, self.limits.max_horizontal_speed_mps, self.limits.max_vertical_speed_mps)
-        self._accept(
-            MotionCommandType.TRACK_TARGET, target, self._h_speed, "track_target",
-            fields, clamped=clamped, requested=requested, decision=decision,
-        )
-        return True
-
     def track_position(
         self, x: float, y: float, z: float, yaw_deg: Optional[float] = None
     ) -> bool:
         """Follow a tracking target that Navigation already computed.
 
-        Under INTEGRATION_README.md, Navigation turns bird geometry into a
-        standoff pose; Motion just flies it. Same kinematics as `move_to`,
-        recorded as TRACK_TARGET so the log shows *why* the drone moved.
-        `track_target()` (bearing/distance in) is kept for older callers.
+        Motion is mechanism-only: it never sees a bird. Navigation turns the
+        tracking geometry into a pose (`navigation.tracking.standoff_target`)
+        and Motion just flies it. Same kinematics as `move_to`, recorded as
+        TRACK_TARGET (log event `track_target`) so the log shows *why* the
+        drone moved. The old bearing/distance method was removed from Motion
+        for exactly that reason.
         """
         yaw = (
             (self._target.yaw_deg if self._target is not None else self._pose.yaw_deg)
@@ -714,8 +695,10 @@ class MotionStub:
         requested = Pose(x, y, z, yaw)
         target, clamped = self._clamp(requested)
         # PHASE-1 HOOK: streamed every tick -> XRCE /fmu/in/trajectory_setpoint
-        #   + /fmu/in/offboard_control_mode (position=True), same as
-        #   track_target(). NED conversion: position = [target.y, target.x,
+        #   + /fmu/in/offboard_control_mode (position=True), a streamed
+        #   setpoint because it is renewed every mission tick (a low-rate
+        #   fallback is MAVLink SET_POSITION_TARGET_LOCAL_NED, same mapping as
+        #   move_to). NED conversion: position = [target.y, target.x,
         #   -target.z], yaw = radians(wrap_180(90 - target.yaw_deg)).
         self._set_target(target, self.limits.max_horizontal_speed_mps, self.limits.max_vertical_speed_mps)
         self._accept(
@@ -1066,7 +1049,7 @@ class MotionStub:
 
     def _set_target(self, target: Pose, h_speed: float, v_speed: float) -> None:
         # Only re-arm the "arrived" log if the goal actually moved; otherwise a
-        # state machine calling hover()/track_target() every tick with the
+        # state machine calling hover()/track_position() every tick with the
         # same answer would log "arrived" every tick.
         if self._target is None or self._target != target:
             self._arrival_logged = False

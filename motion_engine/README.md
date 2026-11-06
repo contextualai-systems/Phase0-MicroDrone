@@ -73,9 +73,9 @@ machine; this is what Motion sees and guarantees for each state:
 | Mission state | Command Motion receives | What Motion does |
 |---|---|---|
 | `IDLE` | nothing | stays on the pad, disarmed |
-| `HOVERING` (launch from `IDLE`) | `ARM` + `TAKEOFF` to 5 m, once each (`arm-N`, `takeoff-N`) | climbs in place at 2 m/s; takeoff has no expiry |
+| `HOVERING` (launch from `IDLE`) | `ARM` + `TAKEOFF` to 5 m, once each (`arm-N`, `takeoff-N`) | climbs in place at 2 m/s; takeoff has no expiry. The mission stays in `HOVERING`, and nothing else is sent, until the climb reaches the full 5 m |
 | `HOVERING` (in the air) | `HOVER`, renewed every tick | holds the pose it had when the hover was accepted |
-| `TRACKING` | nothing yet (no Navigation target) | keeps flying the last command: a takeoff (no expiry) finishes its climb; a hover that is no longer renewed expires into a hold in place |
+| `TRACKING` | nothing yet (no Navigation target) | keeps flying the last command, which is always a `HOVER` because `TRACKING` only starts after the launch climb has finished; no longer renewed, it expires into a hold in place |
 | `DOCKING_INIT` | `HOVER`, renewed | holds |
 | `DOCKING_APPROACH` | `DESCEND_TO_DOCK` to the pad, renewed | flies to the pad (x/y) while descending; `status` → `landed` and `landing_settled = True` once exactly on it |
 | `ABORT` | `STOP`, renewed | holds where it is (mid-descent included) |
@@ -123,10 +123,73 @@ Motion records land in the same `universal_log/logged_states_<run>.log`.
 `contracts.MemoryLogSink` remains the in-memory sink for tests. Motion no
 longer imports the old `mission.logging_format`.
 
+### Shared limits (`MotionLimits.from_config()`)
+
+Speed, geofence, ceiling and tolerance numbers live in one place,
+[`safety_layer/config.py`](../safety_layer/config.py). The coordinator builds
+Motion's limits from it:
+
+```python
+motion = MotionStub(clock=clock, limits=MotionLimits.from_config())
+```
+
+`state_machine/run_loop.py` does exactly this. `MotionLimits()` defaults are
+kept for scripts, and [`tests/test_limits_config.py`](tests/test_limits_config.py)
+fails if they ever disagree with Safety's config, so change both or neither.
+
+### Waypoint executor (`motion_engine/waypoints.py`)
+
+Motion owns waypoint navigation as a *mechanism*; Navigation or the mission
+layer decides *which* waypoints to fly. `WaypointExecutor` takes a list of
+`Pose`s, validates the whole route against the shared limits before anything
+flies, then issues one renewed `MOVE_TO` per waypoint through the normal
+Safety -> `submit()` path and reports `WaypointProgress` (index, reached,
+total, distance to the current waypoint, status, reason).
+
+```python
+from motion_engine.waypoints import WaypointExecutor
+from navigation import build_route
+
+executor = WaypointExecutor()                       # limits from Safety's config
+executor.load("patrol-1", build_route([(20, 0), (20, 15), (0, 15)], altitude_m=5.0), now_ns)
+# each tick:
+cmd = executor.command(state.value, now_ns)         # None once complete/failed
+if cmd is not None:
+    cmd, _ = check_for_motion(cmd, assessment, now_ns)
+    executor.on_ack(motion.submit(cmd, now_ns))
+motion.step(0.1, now_ns=now_ns)
+progress = executor.update(motion.feedback(now_ns))
+```
+
+- A waypoint counts as reached only when Motion reports `arrived` for the
+  executor's own command ID. A Safety hold or an expiry is not arrival; the
+  executor re-issues that waypoint under a new ID next tick.
+- A rejected command fails the route with Motion's reason
+  (`command_rejected`, detail `waypoint N: <reason>`). Retrying, holding or
+  aborting is the mission layer's decision.
+- After the last waypoint `command()` returns `None`; the coordinator chooses
+  what comes next (normally `HOVER`).
+
+**Open question for Jeff/team:** Jeff's Phase 0 notes list waypoint
+navigation under Motion and START_HERE's semester demo includes waypoints, but
+[INTEGRATION_README §2](../INTEGRATION_README.md) defers waypoint mission
+states for the synthetic-loop milestone. The executor is therefore available
+and tested but **not yet wired into `state_machine/run_loop.py`**. Once the
+team agrees which document wins, wiring it in is a coordinator change only.
+
+### Tracking targets come from Navigation
+
+Motion no longer turns bird bearing/distance into a standoff pose (the old
+`MotionStub.track_target()` was removed). Navigation computes the pose with
+[`navigation.tracking.standoff_target`](../navigation/tracking.py) and the
+coordinator sends it as a `TRACK_TARGET` command, which Motion flies via
+`track_position()`. Motion never sees a bird.
+
 ### Runnable checks
 
 ```bash
 py -3 -m pytest motion_engine/tests/test_motion_stubs.py motion_engine/tests/test_motion_contract.py motion_engine/tests/test_universal_logging.py
+py -3 -m pytest motion_engine/tests/test_waypoints.py motion_engine/tests/test_limits_config.py tests/test_navigation.py
 py -3 -m pytest motion_engine/tests/test_state_machine_alignment.py   # Motion as driven by state_machine/run_loop.py
 py -3 motion_engine/synthetic/generate_motion_data.py      # synthetic CSVs, see synthetic/README.md
 ```

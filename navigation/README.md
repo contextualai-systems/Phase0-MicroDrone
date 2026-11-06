@@ -27,4 +27,21 @@ Candidate states: IDLE, TAKEOFF, WAYPOINT, RETURN, ALIGN, LAND, ABORT. Agree whi
 
 The mission follows a configured route and returns to the pad area. Logs explain every state change. Invalid or stale telemetry produces a defined response rather than continued use of old state.
 
-Implementation files and run commands have not yet been created.
+## Implemented
+
+Navigation decides *where* to go; Motion executes. Nothing here calls Motion
+or changes mission state.
+
+| File | What it does |
+|---|---|
+| [`tracking.py`](tracking.py) | `standoff_target(vehicle_pose, bearing_deg, distance_m, standoff_m=15)` turns synthetic tracking geometry into the pose Motion flies as `TRACK_TARGET` (moved out of `MotionStub`) |
+| [`routes.py`](routes.py) | `build_route(points, altitude_m, start)` turns a list of points into waypoint poses, facing the direction of travel, for Motion's [`WaypointExecutor`](../motion_engine/waypoints.py) |
+
+```bash
+py -3 -m pytest tests/test_navigation.py motion_engine/tests/test_waypoints.py
+```
+
+The candidate waypoint mission states above (`TAKEOFF`, `WAYPOINT`, ...) are
+still deferred by [INTEGRATION_README §2](../INTEGRATION_README.md); whether
+waypoint missions are in this milestone is an open question for Jeff and the
+team.

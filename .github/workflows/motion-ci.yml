@@ -1,0 +1,65 @@
+name: Motion CI
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+      - 'requirements-ci.txt'
+      - 'tests/__init__.py'
+      - 'INTEGRATION_README.md'
+      - 'motion_engine/**'
+      - 'safety_layer/**'
+      - 'docking/**'
+      - 'state_machine/**'
+      - 'universal_log/**'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/**'
+      - 'requirements-ci.txt'
+      - 'tests/__init__.py'
+      - 'INTEGRATION_README.md'
+      - 'motion_engine/**'
+      - 'safety_layer/**'
+      - 'docking/**'
+      - 'state_machine/**'
+      - 'universal_log/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: motion-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Motion tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.12', '3.14']
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          submodules: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install test dependencies
+        run: python -m pip install -r requirements-ci.txt
+
+      - name: Motion suite
+        if: ${{ !cancelled() }}
+        run: python -B -m pytest motion_engine/tests -v

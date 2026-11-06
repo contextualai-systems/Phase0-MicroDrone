@@ -71,6 +71,21 @@ def _fresh(section, now_ns) -> bool:
     return age_ns <= config.MAX_OBSERVATION_AGE_S * config.NS_PER_S
 
 
+def _return_deadline_passed(started_ns, now_ns) -> bool:
+    """Has the trip home been going for 60 seconds or more?
+
+    started_ns is when the trip home began, or None if it hasn't.
+    The limit counts as reached at exactly 60 seconds, not just after it.
+    """
+    # Not heading home, or the time isn't a proper whole number.
+    if not isinstance(started_ns, int) or isinstance(started_ns, bool):
+        return False
+    # A start time in the future is broken, so don't trust it.
+    if started_ns > now_ns:
+        return False
+    return now_ns - started_ns >= config.RETURN_DEADLINE_NS
+
+
 def assess(snapshot: dict, now_ns: int) -> SafetyAssessment:
     """Look at what's happening and decide what the drone may do.
 
@@ -130,8 +145,12 @@ def assess(snapshot: dict, now_ns: int) -> SafetyAssessment:
         if environment_ok and environment.get("weather") not in config.SAFE_WEATHER:
             emergency = True
             reasons.append("weather_hazard")
-        # TODO: also land if the 60-second trip home runs out of time.
-        #       Waiting on the coordinator to track that timer.
+        # The trip home has a 60-second limit, counted from the first time it
+        # started. Retries don't reset it, so a drone that can never line up
+        # with the pad lands where it is instead of retrying forever.
+        if _return_deadline_passed(context.get("return_started_ns"), now_ns):
+            emergency = True
+            reasons.append("return_deadline")
 
     # ---------- LEVEL 2: ABORT ----------
     # Less serious than an emergency, so we skip this if it's already one.

@@ -1,0 +1,65 @@
+name: State Machine CI
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+      - 'requirements-ci.txt'
+      - 'tests/__init__.py'
+      - 'INTEGRATION_README.md'
+      - 'state_machine/**'
+      - 'docking/**'
+      - 'motion_engine/**'
+      - 'safety_layer/**'
+      - 'universal_log/**'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/**'
+      - 'requirements-ci.txt'
+      - 'tests/__init__.py'
+      - 'INTEGRATION_README.md'
+      - 'state_machine/**'
+      - 'docking/**'
+      - 'motion_engine/**'
+      - 'safety_layer/**'
+      - 'universal_log/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: state-machine-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: State Machine tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.12', '3.14']
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          submodules: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install test dependencies
+        run: python -m pip install -r requirements-ci.txt
+
+      - name: State-machine suite
+        if: ${{ !cancelled() }}
+        run: python -B -m pytest state_machine/tests motion_engine/tests/test_state_machine_alignment.py -v
