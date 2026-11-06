@@ -144,8 +144,8 @@ python -m unittest discover -s tests -p 'test_computer_vision.py' -v
 python -m unittest discover -s tests -p 'test_cv*.py' -v
 ```
 
-Current coverage is 61 tests: 17 fixture/interface, 10 perception, 10 benchmark,
-17 tracking/shared-publication, and 7 temporal-benchmark tests. Tests run
+Current coverage is 62 tests: 17 fixture/interface, 10 perception, 10 benchmark,
+17 tracking/shared-publication, and 8 temporal-benchmark tests. Tests run
 headlessly, including temporary-video
 playback. `.github/workflows/cv-ci.yml` defines the same suites on Python 3.12
 and 3.14; configured CI is not itself evidence that a remote run passed.
@@ -315,10 +315,14 @@ tracking has its own temporal benchmark, validation suite, and diagnostic replay
 
 This runner exercises actual pixels through `PerceptionPipeline` and
 `PerceptionPublisher`. It preserves the existing shared message format and uses
-an explicitly synthetic, fixed downward-camera-to-ENU transform. Each run has six
-36-frame sequences at 10 Hz (216 frames total): independent marker motion, short
+an explicitly synthetic, fixed downward-camera-to-ENU transform. Each run has seven
+36-frame sequences at 10 Hz (252 frames total): independent marker motion, short
 full occlusion, long full occlusion, three missing camera frames, duplicate IDs,
-and marker entry/exit/re-entry. Markers have distinct evaluator entity IDs even
+marker entry/exit/re-entry, and simultaneous rotation/tilt. The `rotation_tilt`
+scenario varies in-plane rotation and out-of-plane tilt independently for two
+markers (up to approximately 34 degrees each). Select it in playback to inspect
+tracking continuity as perspective changes; this is not an orientation-error metric.
+Markers have distinct evaluator entity IDs even
 when their printed IDs are duplicated. The generator's truth never enters the
 provider, detector, or tracker.
 

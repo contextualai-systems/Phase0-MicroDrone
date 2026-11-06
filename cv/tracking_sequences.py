@@ -10,7 +10,8 @@ CALIBRATION = CameraCalibration("sequence_camera", 640, 480,
                                 ((600., 0., 320.), (0., 600., 240.), (0., 0., 1.)))
 SIDE_M = .12
 FPS = 10
-SCENARIOS = ("motion", "short_occlusion", "long_occlusion", "missing_frames", "duplicate_id", "entry_exit")
+SCENARIOS = ("motion", "short_occlusion", "long_occlusion", "missing_frames", "duplicate_id", "entry_exit",
+             "rotation_tilt")
 
 
 def make_sequence(name, seed=2026):
@@ -39,10 +40,18 @@ def make_sequence(name, seed=2026):
                 or (name == "long_occlusion" and 10 <= index <= 17))
             position = np.array([x + offsets[slot, 0], y + offsets[slot, 1], 1.])
             rvec = np.array([np.pi, 0., 0.])
+            if name == "rotation_tilt":
+                # Independent in-plane rotation and out-of-plane tilt; marker
+                # geometry and rasterization must use the same physical pose.
+                phase = index / 35 * 2 * np.pi + slot * np.pi / 2
+                rz, _ = cv2.Rodrigues(np.array([0., 0., .6*np.sin(phase)]))
+                ry, _ = cv2.Rodrigues(np.array([0., .6*np.cos(phase), 0.]))
+                rvec, _ = cv2.Rodrigues(rz @ ry @ np.diag([1., -1., -1.]))
             corners, _ = cv2.projectPoints(marker_corners(SIDE_M), rvec, position,
                                           np.array(CALIBRATION.matrix), np.zeros(5))
             corners = corners.reshape(4, 2)
-            marker = render_marker(CALIBRATION, marker_id=marker_id, side_m=SIDE_M, tvec=position)
+            marker = render_marker(CALIBRATION, marker_id=marker_id, side_m=SIDE_M,
+                                   rvec=rvec, tvec=position)
             mask = np.zeros((480, 640), np.uint8)
             cv2.fillConvexPoly(mask, np.rint(corners).astype(np.int32), 255)
             image[mask > 0] = marker[mask > 0]

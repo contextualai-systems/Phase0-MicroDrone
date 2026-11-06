@@ -54,6 +54,19 @@ class TrackingBenchmarkTests(unittest.TestCase):
         self.assertEqual(report["fn"], 1)
         self.assertEqual(report["confirmation"]["unconfirmed"], 1)
 
+    def test_rotating_tilted_markers_keep_identity_through_pixel_pipeline(self):
+        _, truth = make_sequence("rotation_tilt")
+        corners = np.asarray(truth[0]["objects"][0]["corners_px"])
+        # Perspective tilt produces unequal opposite edge lengths.
+        self.assertGreater(abs(np.linalg.norm(corners[2]-corners[1]) -
+                               np.linalg.norm(corners[3]-corners[0])), 1.)
+        with tempfile.TemporaryDirectory() as temp:
+            report = run(Path(temp)/"rotation", scenarios=("rotation_tilt",))
+        metrics = report["sequences"]["rotation_tilt"]
+        self.assertEqual((metrics["tp"], metrics["fp"], metrics["fn"]), (72, 0, 0))
+        self.assertEqual(metrics["identity_continuity"]["rate"], 1.)
+        self.assertEqual(metrics["unexpected_id_changes"], 0)
+
     def test_short_gap_and_long_gap_have_different_id_expectations(self):
         frames = [self.truth(0), self.truth(3), self.truth(9)]
         updates = [self.update(0, [self.detection(0)]), self.update(3, [self.detection(3)]),
