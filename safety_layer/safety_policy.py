@@ -18,8 +18,9 @@ The current time is passed in, not looked up, so tests always get the same
 answers no matter how fast the computer runs.
 """
 
+import math
 from dataclasses import dataclass, field
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
 from safety_layer import config
 
@@ -86,6 +87,48 @@ def _return_deadline_passed(started_ns, now_ns) -> bool:
     return now_ns - started_ns >= config.RETURN_DEADLINE_NS
 
 
+def _on_pad(vehicle, dock) -> bool:
+    """Is the drone sitting on the landing pad?
+
+    "On the pad" means within the same 0.25 m Docking uses to confirm a
+    landing. Missing or broken numbers count as not on the pad.
+    """
+    pose = vehicle.get("pose") or {}
+    pad = dock.get("pad_pose") or {}
+    numbers = (pose.get("x"), pose.get("y"), pad.get("x"), pad.get("y"))
+    if not all(isinstance(n, (int, float)) and not isinstance(n, bool) for n in numbers):
+        return False
+    distance = math.hypot(pose["x"] - pad["x"], pose["y"] - pad["y"])
+    return distance <= config.DOCK_ALIGNMENT_TOLERANCE_M
+
+
+def _launch_problems(vehicle, environment, dock, vehicle_ok, environment_ok, dock_ok) -> List[str]:
+    """What's stopping a takeoff right now? Only asked while on the ground.
+
+    Each check only runs when its information can be trusted. If it can't,
+    the drone is blocked anyway and the "stale" or "missing" reason already
+    explains why, so we don't pile on guesses made from bad data.
+    """
+    problems = []
+    if vehicle_ok:
+        if vehicle.get("grounded") is not True:
+            problems.append("not_grounded")
+        if vehicle.get("armed") is not False:
+            # Motors already spinning on the ground: something else is going on.
+            problems.append("motors_armed")
+        if dock_ok and not _on_pad(vehicle, dock):
+            problems.append("not_on_pad")
+    if environment_ok:
+        # In the air these are emergencies. On the ground the drone simply
+        # waits on the pad until they clear, instead of taking off into a
+        # storm and having to land again straight away.
+        if environment.get("comm_ok") is not True:
+            problems.append("comm_loss")
+        if environment.get("weather") not in config.SAFE_WEATHER:
+            problems.append("weather_hazard")
+    return problems
+
+
 def assess(snapshot: dict, now_ns: int) -> SafetyAssessment:
     """Look at what's happening and decide what the drone may do.
 
@@ -112,6 +155,7 @@ def assess(snapshot: dict, now_ns: int) -> SafetyAssessment:
     vehicle_ok = _fresh(vehicle, now_ns)
     battery_ok = _fresh(battery, now_ns)
     environment_ok = _fresh(environment, now_ns)
+    dock_ok = _fresh(dock, now_ns)
 
     # Is the drone currently in the air? Rules are different on the ground.
     flight_active = bool(context.get("flight_active"))
@@ -197,7 +241,7 @@ def assess(snapshot: dict, now_ns: int) -> SafetyAssessment:
             blocked.update(("launch", "tracking"))
             reasons.append("camera_failure")
 
-    if not _fresh(dock, now_ns):
+    if not dock_ok:
         # We don't know where the landing pad is.
         blocked.update(("approach", "descent"))
         reasons.append("missing_pad")
@@ -219,6 +263,19 @@ def assess(snapshot: dict, now_ns: int) -> SafetyAssessment:
     # Taking off needs a well-charged battery, not just a not-low one.
     if not battery_recovered:
         blocked.add("launch")
+
+    # ---------- LAUNCH CHECKS (on the ground only) ----------
+    # Takeoff also needs: on the ground, motors off, sitting on the pad,
+    # signal OK and safe weather. We only check this on the ground, so these
+    # reasons never get mixed into the reasons for coming home mid-flight.
+    # Missing pad data already blocks launch through "missing_pad".
+    if not flight_active:
+        launch_problems = _launch_problems(
+            vehicle, environment, dock, vehicle_ok, environment_ok, dock_ok
+        )
+        if launch_problems or not dock_ok:
+            blocked.add("launch")
+        reasons.extend(launch_problems)
 
     # An emergency stops everything, including holding still.
     # An abort stops flying around, but holding still is still allowed,
