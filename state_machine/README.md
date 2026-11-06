@@ -50,7 +50,9 @@ What `step()` receives on one tick of the `full_cycle` demo (5000 ms: low batter
 ```json
 {
   "timestamp_ns": 5000000000,
-  "bird":        { "detected": false, "type": null, "distance_m": null, "valid": true, "timestamp_ns": 5000000000 },
+  "bird":        { "detected": false, "type": null, "distance_m": null, "valid": true, "reason": null, "camera_ok": true,
+                   "timestamp_ns": 5000000000, "source_timestamp_ns": 5000000000, "frame_index": 50,
+                   "...": "the rest of CV's bird snapshot" },
   "battery":     { "percent": 18, "valid": true, "timestamp_ns": 5000000000 },
   "environment": { "people_nearby": false, "cart_moving": true, "weather": "clear",
                    "camera_ok": true, "comm_ok": true, "valid": true, "timestamp_ns": 5000000000 },
@@ -70,7 +72,8 @@ What `step()` receives on one tick of the `full_cycle` demo (5000 ms: low batter
 
 | Section | Comes from |
 |---|---|
-| `bird`, `battery`, `environment`, `dock` | The demo scenario (`demos.py`), stamped with the current time. `bird` will come from CV once it is connected. `dock.pad_pose` is the fixed pad (`PAD` in `run_loop.py`). |
+| `bird` | CV's latest sample (`ComputerVision.read_due()`), with the sample's own `timestamp_ns` (see "CV integration") |
+| `battery`, `environment`, `dock` | The demo scenario (`demos.py`), stamped with the current time. `dock.pad_pose` is the fixed pad (`PAD` in `run_loop.py`). |
 | `vehicle` | Motion's feedback from the previous tick (`VehicleFeedback.to_dict()`) |
 | `context` | `run_loop.py`: `flight_active` is true while the drone is armed or airborne; `return_started_ns` is the return latch (see "Docking integration"); `launch_phase` is the launch progress from the previous tick (see "MissionStatus") |
 | `safety` | Safety's `assess()`, worked out from the sections above |
@@ -188,7 +191,7 @@ Be able to, in a running simulation, test each of these values changing.
 
 `run_loop.py` asks Safety what is allowed every tick, before `step()`:
 
-1. It builds the snapshot: the scenario's `bird`, `battery`, `environment` and `dock` facts, each stamped with the current time; Motion's feedback as `vehicle`; and `context` with `flight_active` and `return_started_ns`.
+1. It builds the snapshot: the scenario's `battery`, `environment` and `dock` facts, each stamped with the current time; Motion's feedback as `vehicle`; and `context` with `flight_active`, `return_started_ns` and `launch_phase`.
 2. It calls Safety's `assess(snapshot, now_ns)` ([`safety_layer/safety_policy.py`](../safety_layer/safety_policy.py)) and puts the answer in `snapshot["safety"]`, where `step()` reads it.
 
 Safety fails closed: a missing section, or one older than 0.5 s, counts as not permitted. Its emergency rules (critical battery, lost comms, bad weather, stale data) only apply while `flight_active` is true.
@@ -196,6 +199,28 @@ Safety fails closed: a missing section, or one older than 0.5 s, counts as not p
 `context.return_started_ns` is for Safety's 60 s return deadline ([integration contract](../INTEGRATION_README.md) sections 5 and 6). Safety does not read it yet: the deadline is still a TODO in `safety_policy.py`, and the field name is a proposal to agree with the Safety team.
 
 Every command then passes through `check_for_motion()` ([`motion_engine/safety_adapter.py`](../motion_engine/safety_adapter.py)) before it reaches Motion. If Safety does not permit it, Safety sends a replacement instead: `HOVER`, `LAND` if holding is not permitted either, or `EMERGENCY_LAND` during an emergency. A replacement's command id ends in `-safety`.
+
+## CV integration
+
+The bird comes from CV's `ComputerVision` ([`cv/computer_vision.py`](../cv/computer_vision.py)), not from the scenario script:
+
+1. At the start of a run, `build_temp_fixture(scenario, duration_ms)` turns the scenario's bird events into a CV fixture: 10 fps (one frame per tick), not looping, and as long as the run. The bird is "no bird" (`BIRD_GONE`) until an event changes it.
+2. CV only reads fixtures from a file, so the loop writes the fixture to a temporary file, starts the camera from it, and the file is deleted straight away. The timestamp mapper is the identity, because the camera and the simulation clock both start at 0.
+3. Every tick, after `assess()` and before Docking, `read_due(now_ns)` gives CV's latest sample:
+   - A sample: its `to_bird_snapshot()` goes into `snapshot["bird"]` as it is. The loop does not restamp it, so a sample cached from an earlier tick keeps its older `timestamp_ns`.
+   - `None`, before the first sample is due: `BIRD_UNAVAILABLE` (`valid` false, `detected` null, `reason` `"no_sample"`). `step()` treats it as no bird, and Docking as a camera failure.
+   - `StopIteration`, when the fixture runs out: the run ends on that tick. This is the planned end of the scenario, not a camera failure.
+
+CV's bird has more fields than the old scripted one (see "Shared bird snapshot" in [`cv/README.md`](../cv/README.md)). `detected` is true, false, or null for a missing frame, which is `valid: false` with reason `missing_frame`.
+
+With the demos' 10 fps fixtures, every sample's time equals the tick time, so the demos behave exactly as they did with the scripted bird.
+
+Not connected yet:
+
+- `environment.camera_ok`, which Safety reads, is still scripted. CV's own `camera_ok` is not copied into it.
+- `bird_absent` (see "Docking integration") starts at the tick time, not at the first absent sample's time ([integration contract](../INTEGRATION_README.md) section 7). They are the same at 10 fps.
+- CV's log records are collected in a list but not returned or written to the log.
+- `run_world()` always builds its fixture from the scenario, so it can't run one of CV's own fixtures (such as `cv/scenarios/integration_cycle.json`).
 
 ## Docking integration
 
@@ -232,7 +257,6 @@ Not connected yet:
 
 - `TRACKING` sends no command, because there is no Navigation target yet.
 - A command that Motion rejects is printed, not handled. `context` does not yet report it to Safety (`pending_command_failure`), and has no `operator_abort`.
-- The bird is still scripted by the demo scenarios; CV is not connected yet.
 - The 60 s return deadline does not fire yet (see "Safety integration"), so a drone that can never line up with the pad keeps retrying until the run ends.
 
 ## MissionStatus
@@ -336,8 +360,14 @@ Code lives in this folder:
 - `state_machine.py`: the `State` enum and `step()`.
 - `run_loop.py`: the 10 Hz synthetic loop. It runs a scripted demo through `step()`, sends the matching commands to Motion, and builds a `MissionStatus` every tick.
 - `contracts.py`: `MissionStatus`, the mission's status for one tick (see "MissionStatus").
-- `demos.py`: the scripted demo scenarios. They script facts about the world (bird, battery, cart, people, comms, pad alignment), not Safety's or Docking's answers.
+- `demos.py`: the scripted demo scenarios. They script facts about the world (bird, battery, cart, people, comms, pad alignment), not Safety's or Docking's answers. Each starts with `BIRD_DEMO_INIT` (no bird at 0 ms), and its bird events reach the loop through CV (see "CV integration").
 - `tests/`: unit tests for `step()`, one end-to-end test per demo, and tests of the `MissionStatus` records (the validation rules on every demo, and the launch phase).
+
+The run loop uses CV, which needs OpenCV and NumPy. Install them once from the repo root:
+
+```bash
+python3 -m pip install -r cv/requirements.txt
+```
 
 Run a demo from the repo root:
 
