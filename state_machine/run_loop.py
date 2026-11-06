@@ -196,8 +196,10 @@ def send_command(motion, clock, active, state, reason, wanted, assessment):
     return ack
 
 
+# camera_fixture: the path to one of CV's own fixture files (such as cv/scenarios/integration_cycle.json).
+# The bird then comes from that file as it is; without it, the bird comes from the scenario's bird events.
 def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool = False,
-              scenario: list = DEMO_SCENARIO, viewPosition: bool = False):
+              scenario: list = DEMO_SCENARIO, viewPosition: bool = False, camera_fixture: str | None = None):
     world = init_world()
     currState = State.IDLE
     clock = SimulationClock()
@@ -225,14 +227,17 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
         log_sink=records.append,
     )
 
-    # CV only reads fixtures from a file, so write this run's bird fixture to a temporary one.
-    # start_camera reads the file straight away, so it can be deleted as soon as the camera starts.
-    fixture = build_temp_fixture(scenario, duration_ms)
-    with tempfile.TemporaryDirectory() as folder:
-        fixture_path = os.path.join(folder, "fixture.json")
-        with open(fixture_path, "w") as file:
-            json.dump(fixture, file)
-        cv.start_camera(fixture_path, camera_id="front")  # after the file is closed, so CV reads all of it
+    if camera_fixture is not None:
+        cv.start_camera(camera_fixture, camera_id="front")
+    else:
+        # CV only reads fixtures from a file, so write this run's bird fixture to a temporary one.
+        # start_camera reads the file straight away, so it can be deleted as soon as the camera starts.
+        fixture = build_temp_fixture(scenario, duration_ms)
+        with tempfile.TemporaryDirectory() as folder:
+            fixture_path = os.path.join(folder, "fixture.json")
+            with open(fixture_path, "w") as file:
+                json.dump(fixture, file)
+            cv.start_camera(fixture_path, camera_id="front")  # after the file is closed, so CV reads all of it
 
     for tick in range(duration_ms // TICK_MS):
         current_time_ms = tick * TICK_MS
@@ -398,6 +403,11 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
             
         if real_time:
             time.sleep(TICK_MS / 1000)  # Sleep for the duration of one tick in seconds
+
+    # A CV fixture that runs out ends the run before duration_ms, so the last tick
+    # that ran didn't get the outcome. Give it the outcome now.
+    if statuses and statuses[-1].outcome is None:
+        statuses[-1] = dataclasses.replace(statuses[-1], outcome=run_outcome(statuses[-1].state))
 
     cv.stop_camera()
 

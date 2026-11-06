@@ -206,10 +206,12 @@ The bird comes from CV's `ComputerVision` ([`cv/computer_vision.py`](../cv/compu
 
 1. At the start of a run, `build_temp_fixture(scenario, duration_ms)` turns the scenario's bird events into a CV fixture: 10 fps (one frame per tick), not looping, and as long as the run. The bird is "no bird" (`BIRD_GONE`) until an event changes it.
 2. CV only reads fixtures from a file, so the loop writes the fixture to a temporary file, starts the camera from it, and the file is deleted straight away. The timestamp mapper is the identity, because the camera and the simulation clock both start at 0.
+
+   `run_world(..., camera_fixture=path)` skips steps 1 and 2 and starts the camera from one of CV's own fixture files instead, as it is. The tests run CV's 15 Hz `cv/scenarios/integration_cycle.json` this way.
 3. Every tick, after `assess()` and before Docking, `read_due(now_ns)` gives CV's latest sample:
    - A sample: its `to_bird_snapshot()` goes into `snapshot["bird"]` as it is. The loop does not restamp it, so a sample cached from an earlier tick keeps its older `timestamp_ns`.
    - `None`, before the first sample is due: `BIRD_UNAVAILABLE` (`valid` false, `detected` null, `reason` `"no_sample"`). `step()` treats it as no bird, and Docking as a camera failure.
-   - `StopIteration`, when the fixture runs out: the run ends on that tick. This is the planned end of the scenario, not a camera failure.
+   - `StopIteration`, when the fixture runs out: the run ends on that tick. This is the planned end of the scenario, not a camera failure, so the last tick that ran gets the run's `outcome`. A demo's own fixture is as long as the run, so this only happens with a shorter fixture passed as `camera_fixture`.
 
 CV's bird has more fields than the old scripted one (see "Shared bird snapshot" in [`cv/README.md`](../cv/README.md)). `detected` is true, false, or null for a missing frame, which is `valid: false` with reason `missing_frame`.
 
@@ -220,7 +222,6 @@ Not connected yet:
 - `environment.camera_ok`, which Safety reads, is still scripted. CV's own `camera_ok` is not copied into it.
 - `bird_absent` (see "Docking integration") starts at the tick time, not at the first absent sample's time ([integration contract](../INTEGRATION_README.md) section 7). They are the same at 10 fps.
 - CV's log records are collected in a list but not returned or written to the log.
-- `run_world()` always builds its fixture from the scenario, so it can't run one of CV's own fixtures (such as `cv/scenarios/integration_cycle.json`).
 
 ## Docking integration
 
@@ -361,7 +362,7 @@ Code lives in this folder:
 - `run_loop.py`: the 10 Hz synthetic loop. It runs a scripted demo through `step()`, sends the matching commands to Motion, and builds a `MissionStatus` every tick.
 - `contracts.py`: `MissionStatus`, the mission's status for one tick (see "MissionStatus").
 - `demos.py`: the scripted demo scenarios. They script facts about the world (bird, battery, cart, people, comms, pad alignment), not Safety's or Docking's answers. Each starts with `BIRD_DEMO_INIT` (no bird at 0 ms), and its bird events reach the loop through CV (see "CV integration").
-- `tests/`: unit tests for `step()`, one end-to-end test per demo, and tests of the `MissionStatus` records (the validation rules on every demo, and the launch phase).
+- `tests/`: unit tests for `step()`, one end-to-end test per demo, tests of the `MissionStatus` records (the validation rules on every demo, and the launch phase), and tests that run CV's 15 Hz fixture (the bird keeps its sample's time; the run ends when the fixture does).
 
 The run loop uses CV, which needs OpenCV and NumPy. Install them once from the repo root:
 
@@ -399,7 +400,7 @@ python3 -m pytest state_machine -v
 
 The tests call `run_world()` without real-time pacing or logging, so they finish immediately and write no files.
 
-`run_world(duration_ms, scenario=...)` returns a dict:
+`run_world(duration_ms, scenario=..., camera_fixture=...)` returns a dict (`camera_fixture` is optional; see "CV integration"):
 
 - `transitions`: `(time_ms, from_state, to_state, reason)` for each state change.
 - `commands`: `(time_ms, kind, accepted, reason)` for each new command sent to Motion. A renewed command is listed once.
