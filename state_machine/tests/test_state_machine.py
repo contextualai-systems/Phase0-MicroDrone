@@ -416,7 +416,7 @@ def test_each_tick_has_a_mission_status(name):
 def test_launch_phase_reaches_complete():
     # The bird leaves right after the launch, so the mission stays in HOVERING for the whole climb:
     # launch_phase goes none -> climbing -> complete, then back to none once the mission leaves HOVERING.
-    scenario = [(1000, {"bird": BIRD_SEEN}), (1100, {"bird": BIRD_GONE})]
+    scenario = [(0, {"bird": BIRD_GONE}), (1000, {"bird": BIRD_SEEN}), (1100, {"bird": BIRD_GONE})]
     statuses = run_world(4500, scenario=scenario)["statuses"]
 
     phases = []  # (state, launch_phase) each time either one changes
