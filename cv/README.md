@@ -70,6 +70,19 @@ finally:
     cv.stop_camera()
 ```
 
+The coordinator can also pass an in-memory fixture without writing a file:
+
+```python
+# fixture is a dict using the same schema as cv/scenarios/*.json.
+cv.start_camera(scenario=fixture, camera_id="front")
+# For JSON text, first decode it with json.loads(json_text).
+```
+
+Supply either `scenario_path` or `scenario`, not both. Omitting both loads the
+default demo. In-memory fixtures use the same validation and are deep-copied,
+so later edits to the caller's dictionary do not change an active session.
+Stop the camera before starting another fixture; scheduling and timestamps are unchanged.
+
 `read_due(now_ns)` consumes all samples due at the supplied simulation time and
 returns the latest one. A 15 Hz fixture in a 10 Hz loop can consume more than one
 sample per tick. Every consumed sample is logged. Before the first sample is
@@ -144,7 +157,7 @@ python -m unittest discover -s tests -p 'test_computer_vision.py' -v
 python -m unittest discover -s tests -p 'test_cv*.py' -v
 ```
 
-Current coverage is 62 tests: 17 fixture/interface, 10 perception, 10 benchmark,
+Current coverage is 64 tests: 19 fixture/interface, 10 perception, 10 benchmark,
 17 tracking/shared-publication, and 8 temporal-benchmark tests. Tests run
 headlessly, including temporary-video
 playback. `.github/workflows/cv-ci.yml` defines the same suites on Python 3.12

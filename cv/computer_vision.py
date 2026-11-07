@@ -181,18 +181,26 @@ class ComputerVision:
 
     def start_camera(
         self,
-        scenario_path: str | Path = DEFAULT_SCENARIO,
+        scenario_path: str | Path | None = None,
         camera_id: str = "front",
         image_path: str | Path | None = None,
+        *,
+        scenario: dict | None = None,
     ) -> None:
         """Load a synthetic source; the first read starts at fixture time zero.
 
         Stop before starting another source so resets are explicit to consumers.
         This prepares capture; it does not create a background thread.
+        Pass either a file path or a decoded JSON object via scenario=.
+        With neither, use the default demo. The source owns a deep copy.
         """
         if self._source is not None:
             raise RuntimeError("Camera already started; call stop_camera() first")
-        scenario = json.loads(Path(scenario_path).read_text(encoding="utf-8"))
+        if scenario is not None and scenario_path is not None:
+            raise ValueError("Pass either scenario_path or scenario, not both")
+        if scenario is None:
+            path = DEFAULT_SCENARIO if scenario_path is None else Path(scenario_path)
+            scenario = json.loads(path.read_text(encoding="utf-8"))
         self._source = SyntheticSource(
             scenario, camera_id, None if image_path is None else Path(image_path)
         )
