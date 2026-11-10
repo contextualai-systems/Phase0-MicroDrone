@@ -53,6 +53,31 @@ class ComputerVisionTests(unittest.TestCase):
         self.assertEqual(repeated.camera_id, "downward")
         self.assertEqual(present.to_dict()["bird"], repeated.to_dict()["bird"])
 
+    def test_in_memory_fixture_matches_file_and_is_isolated(self):
+        file_cv = self.start(timestamp_mapper=lambda ns: ns + 100)
+        memory_cv = ComputerVision(timestamp_mapper=lambda ns: ns + 100,
+                                   log_sink=lambda record: None)
+        memory_cv.start_camera(scenario=self.scenario, camera_id="downward")
+        self.scenario["segments"][0]["bird"]["distance_m"] = 999
+        self.scenario["fps"] = 1
+        for now in (100, 100_000_100, 200_000_100, 300_000_100):
+            self.assertEqual(file_cv.read_due(now).to_dict(), memory_cv.read_due(now).to_dict())
+        file_cv.stop_camera()
+        memory_cv.stop_camera()
+
+    def test_in_memory_fixture_validation_does_not_start_camera(self):
+        cv = ComputerVision(log_sink=lambda record: None)
+        for invalid in ({}, [], "{}"):
+            with self.assertRaises(ValueError):
+                cv.start_camera(scenario=invalid)
+        with self.assertRaises(ValueError):
+            cv.start_camera(self.path, scenario=self.scenario)
+        cv.start_camera(scenario=self.scenario)
+        with self.assertRaises(RuntimeError):
+            cv.start_camera(scenario=self.scenario)
+        self.assertTrue(cv.read().detected)
+        cv.stop_camera()
+
     def test_lifecycle(self):
         cv = ComputerVision()
         with self.assertRaises(RuntimeError):
