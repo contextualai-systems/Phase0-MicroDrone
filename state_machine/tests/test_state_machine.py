@@ -2,7 +2,9 @@ import json
 
 import pytest
 
+from motion_engine.contracts import CommandAck, MotionCommandType
 from safety_layer.safety_policy import assess
+from state_machine import run_loop
 from state_machine.demos import BIRD_GONE, BIRD_SEEN, DEMOS
 from state_machine.run_loop import run_world
 from state_machine.state_machine import step, State
@@ -349,6 +351,31 @@ def test_return_start_time_survives_abort_and_retry(monkeypatch):
     # One start time, from the first DOCKING_INIT at 7000 ms, kept through the abort and retry
     assert {started for started in contexts if started is not None} == {7_000_000_000}
     assert contexts[-1] is None  # cleared once the drone is back in IDLE
+
+
+def test_rejected_command_makes_safety_abort(monkeypatch):
+    # Motion rejects full_cycle's first HOVER, at 4.0 s. The loop reports it to Safety on the next
+    # tick (context pending_command_failure), and Safety aborts (INTEGRATION_README.md section 6).
+    class RejectFirstHover(run_loop.MotionStub):
+        rejected = False
+        def submit(self, command, now_ns):
+            if command.kind == MotionCommandType.HOVER and not self.rejected:
+                self.rejected = True
+                return CommandAck(command.command_id, False, "test_rejection", now_ns)
+            return super().submit(command, now_ns)
+    monkeypatch.setattr(run_loop, "MotionStub", RejectFirstHover)
+
+    scenario, duration_ms = DEMOS["full_cycle"]
+    transitions = run_world(duration_ms, scenario=scenario)["transitions"]
+    assert (4100, State.HOVERING, State.ABORT, "Safety abort") in transitions
+
+
+def test_return_deadline_lands_a_drone_that_never_lines_up():
+    # The pad alignment never comes back, so Docking keeps failing and retrying. Safety's 60 s return
+    # deadline, counted from the first DOCKING_INIT at 7.0 s, ends it with an emergency landing at 67.0 s.
+    scenario = [(500, {"bird": BIRD_SEEN}), (4000, {"bird": BIRD_GONE, "dock": {"alignment_valid": False}})]
+    transitions = run_world(70000, scenario=scenario)["transitions"]
+    assert transitions[-1] == (67000, State.DOCKING_APPROACH, State.EMERGENCY_LAND, "Safety emergency")
 
 
 # How each demo ends (README "MissionStatus"): back on the pad is "completed", ABORT or
