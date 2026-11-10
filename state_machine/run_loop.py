@@ -196,12 +196,12 @@ def send_command(motion, clock, active, state, reason, wanted, assessment):
 # camera_fixture: the path to one of CV's own fixture files (such as cv/scenarios/integration_cycle.json).
 # The bird then comes from that file as it is; without it, the bird comes from the scenario's bird events.
 def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool = False,
-              scenario: list = DEMO_SCENARIO, viewPosition: bool = False, camera_fixture: str | None = None):
+              scenario: list = DEMO_SCENARIO, viewPosition: bool = False, camera_fixture: str | None = None, motion_logger=None):
     world = init_world()
     currState = State.IDLE
     clock = SimulationClock()
     # Same limits Safety uses (safety_layer/config.py), not MotionStub's defaults
-    motion = MotionStub(clock=clock, limits=MotionLimits.from_config())
+    motion = MotionStub(clock=clock, limits=MotionLimits.from_config(), logger=motion_logger)
     docking = DockingController()
     launches = 0
     bird_absent = None

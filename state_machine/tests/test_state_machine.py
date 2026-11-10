@@ -8,6 +8,7 @@ from state_machine import run_loop
 from state_machine.demos import BIRD_GONE, BIRD_SEEN, DEMOS
 from state_machine.run_loop import run_world
 from state_machine.state_machine import step, State
+from motion_engine.contracts import MemoryLogSink
 
 AIRBORNE_STATES = [State.TRACKING, State.HOVERING, State.DOCKING_INIT, State.DOCKING_APPROACH, State.ABORT]
 
@@ -487,3 +488,15 @@ def test_run_ends_when_the_cv_fixture_runs_out():
     assert statuses[-1].outcome == "interrupted"  # still airborne when the scenario ended
     for status in statuses[:-1]:
         assert status.outcome is None
+
+
+def test_motion_logger_gets_motion_records():
+    # run_world passes motion_logger to MotionStub, so Motion's records reach it.
+    # MemoryLogSink keeps them in memory, so the test writes no log files.
+    sink = MemoryLogSink()
+    scenario, duration_ms = DEMOS["full_cycle"]
+    run_world(duration_ms, scenario=scenario, motion_logger=sink)
+
+    assert sink.records  # the logger reached Motion
+    assert all(record.module == "MOTION" for record in sink.records)
+    assert sink.records[0].event == "arm"  # the launch is the first thing Motion is asked to do
