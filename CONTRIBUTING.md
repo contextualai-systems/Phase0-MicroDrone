@@ -8,7 +8,7 @@ Phase 0 contributions include code, documentation, simulation fixtures, and test
 ## Project Overview
 Read [START_HERE.md](START_HERE.md) for the authoritative Phase 0 scope and team responsibilities.
 
-CV work is limited to synthetic frames, preprocessing, logging, and timestamped detection stubs. Other modules consume those observations and own mission, docking, and safety decisions. Marker detection is optional stretch work; pose estimation belongs in Phase 1.
+CV work is limited to synthetic frames, preprocessing, logging, and timestamped detection stubs. Other modules consume those observations and are responsible for mission, docking, and safety decisions. Marker detection is optional stretch work; pose estimation belongs in Phase 1.
 
 Hardware integration and further capabilities will be scoped separately.
 
@@ -21,7 +21,7 @@ Create your own fork of the repo:
 https://github.com/contextualai-systems/Phase0-MicroDrone
 
 ### 2. Clone Your Fork
-git clone https://github.com/<your-username>/Phase0-MicroDrone.git  
+git clone https://github.com/YOUR_GITHUB_USERNAME/Phase0-MicroDrone.git  
 cd Phase0-MicroDrone
 
 ### 3. Create a Branch
@@ -47,76 +47,62 @@ Phase0-MicroDrone/
 
 ---
 
-## Good First Issues
-Beginner‑friendly tasks are listed under **Issues**:
-
-Examples:
-- Add logging to CV pipeline
-- Write documentation for motion engine
-- Create simple OpenCV script
-- Build basic tilt/rotation behavior in simulation
-- Add interior‑sensor mock data
-- Improve simulation environment assets
-- Create unit tests for safety rules
-
----
-
 ## Code Guidelines
 
 ### Python
-- Follow PEP‑8 style guidelines
-- Use clear, descriptive variable names
-- Add comments for non‑obvious logic
-- Keep functions small and modular
+- Follow PEP‑8 style guidelines.
+- Use clear, descriptive variable names.
+- Add comments for non‑obvious logic.
+- Keep functions small and modular.
 
 ### Motion Engine / Safety Layer
-- Use deterministic logic
-- Document all thresholds and parameters
-- Include test cases in `/tests`
+- Use deterministic logic.
+- Document all thresholds and parameters.
+- Include test cases in `/tests`.
 
 ### Computer Vision
-- Keep CV scripts in `src/cv/`
-- Include sample images or mock data when possible
-- Log intermediate results for debugging
+- Keep CV scripts in `src/cv/`.
+- Include sample images or mock data when possible.
+- Log intermediate results for debugging.
 
 ### Simulation
-- Place world files and models in `simulation/`
-- Document how to run your simulation scenario
+- Place world files and models in `simulation/`.
+- Document how to run your simulation scenario.
 
 ---
 
 ## Testing
 Before submitting a pull request:
-- Run unit tests in `/tests`
-- Test motion behaviors in simulation
-- Validate safety rules (no‑launch zones, interior mode, human detection)
-- Confirm code runs on Jetson Nano if applicable
+- Run unit tests in `/tests`.
+- Test motion behaviors in simulation.
+- Validate safety rules (no‑launch zones, interior mode, human detection).
+- Confirm the code runs on Jetson Nano, if applicable.
 
 ---
 
 ## Pull Requests
 All contributions must be submitted through a Pull Request (PR).
 
-### PR Requirements:
-- Clear description of the change
-- Reference any related Issue
-- Screenshots or logs if relevant
-- Tests included when possible
-- No breaking changes without discussion
+### PR Requirements
+- Provide a clear description of the change.
+- Reference any related issues.
+- Include screenshots or logs if relevant.
+- Include tests when possible.
+- Discuss breaking changes before submitting them.
 
-### PR Review Process:
-- Maintainers review for correctness and clarity
-- Requested changes must be addressed
-- Once approved, PR will be merged into `main`
+### PR Review Process
+- Maintainers review contributions for correctness and clarity.
+- Address any requested changes.
+- Once approved, the PR will be merged into `main`.
 
 ---
 
 ## Collaboration Expectations
-- Be kind, supportive, and curious
-- Ask questions early
-- Attend weekly RCOS stand‑ups
-- Coordinate with other sub‑teams (CV, Motion, Safety, Docking, Simulation)
-- Document everything you build
+- Be kind, supportive, and curious.
+- Ask questions early.
+- Attend weekly RCOS stand‑ups.
+- Coordinate with other sub‑teams (CV, Motion, Safety, Docking, Simulation).
+- Document everything you build.
 
 ---
 

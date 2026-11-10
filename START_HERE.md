@@ -4,7 +4,7 @@
 
 Phase 0 builds an open-source simulation and reusable robotics foundation for a future microdrone platform. The broader product concept is a drone that operates from a golf cart dock; this semester focuses on software and simulation, with no physical flight or hardware integration.
 
-**Semester demonstration:** a simulated drone takes off, follows waypoints, returns to a stationary landing pad, with flight logs and tested safety overrides.
+**Semester demonstration:** A simulated drone takes off, follows waypoints, and returns to a stationary landing pad, with flight logs and tested safety overrides.
 
 This guide defines the authoritative Phase 0 scope for the RCOS team. It describes proposed work, not completed functionality. The repository currently contains documentation and placeholder files; a reproducible runtime and dependency setup still need to be established.
 
@@ -12,7 +12,6 @@ This guide defines the authoritative Phase 0 scope for the RCOS team. It describ
 
 | Workstream | Required work |
 | --- | --- |
-| Simulation | Worlds, existing vehicle models, simulated sensors, and repeatable fixtures |
 | CV | Synthetic frames, preprocessing, logging, and a simple detection stub |
 | Motion and navigation | Generic movement commands, waypoint logic, and state logging |
 | Safety and docking | Constraints, state transitions, and alignment tests using explicit synthetic inputs |
@@ -99,7 +98,7 @@ Stretch work: 2D marker detection. It is not required for the integrated demonst
 
 ## Module guides
 
-The [original README archive](docs/archive/original-readmes/INDEX.md) preserves the previous central and module documentation for historical reference.
+The following README files may be helpful:
 
 - [Computer Vision](cv/README.md)
 - [Motion Engine](motion_engine/README.md)
@@ -109,13 +108,3 @@ The [original README archive](docs/archive/original-readmes/INDEX.md) preserves 
 - [Simulation](simulation/README.md)
 
 The existing `src/` and `tests/` directories are placeholders for implementation and verification. Hardware and electronics directories are not Phase 0 build assignments.
-
-## First pre-code meeting
-
-1. Agree the demonstration and record unresolved boundary questions.
-2. Assign the reference simulation setup and a second person to reproduce it.
-3. Define shared messages, coordinate frames, and failure behavior.
-4. Assign the first deliverables above as issues with acceptance criteria.
-5. Schedule an early integrated demonstration and reconcile older onboarding documents.
-
-There is no project install or launch command yet. Add one only after it has been verified from a clean checkout.
