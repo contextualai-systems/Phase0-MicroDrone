@@ -13,6 +13,7 @@ from universal_log.Universal_log import UniversalLog
 from motion_engine.contracts import Command, MotionCommandType, Pose, SimulationClock
 from motion_engine.motion_stubs import MotionLimits, MotionStub
 from motion_engine.safety_adapter import check_for_motion
+from motion_engine.universal_logging import UniversalLogSink
 from cv.computer_vision import ComputerVision
 
 TICK_HZ = 10
@@ -307,6 +308,8 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
 
 
         newState, reason = step(currState, snapshot)
+        if motion_logger is not None:
+            motion.set_log_context(state=newState.value)
         if newState != currState:
             state_entered = now_ns
 
@@ -412,7 +415,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     scenario, duration_ms = DEMOS[args.demo]
-    result = run_world(duration_ms, True, True, scenario, False)
+    result = run_world(duration_ms, True, True, scenario, False, motion_logger=UniversalLogSink())
     for currentTimeMs, currState, newState, reason in result["transitions"]:
         print(f"({currentTimeMs}ms) {currState.value} -> {newState.value}: Reason: {reason}")
 
