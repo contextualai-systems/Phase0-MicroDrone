@@ -255,11 +255,8 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
             "return_started_ns": return_started,  # for Safety's 60 s return deadline
             "launch_phase": current_launch_phase(launching, vehicle),  # so step() waits for the climb
         }
-        assessment = assess(snapshot, now_ns)
-        snapshot["safety"] = dataclasses.asdict(assessment)
 
 
-        
         # start cv
         cv.set_log_context(state=currState.value)  # Use the actual mission State.value.
         try:
@@ -274,13 +271,15 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
         snapshot["bird"] = bird.copy()
         
         # remember when the bird went missing
-        # bird = snapshot["bird"]
         if bird["valid"] and bird["detected"]:
             bird_absent = None
         elif bird["valid"] and not bird["detected"]:
             if (bird_absent is None):
-                bird_absent = now_ns
-
+                bird_absent = bird["timestamp_ns"]
+        
+        assessment = assess(snapshot, now_ns)
+        snapshot["safety"] = dataclasses.asdict(assessment)
+        
         # docking
         dockInputs = DockingInput(
             mission_state=currState.value,
@@ -305,10 +304,6 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
         )
         dockUpdate = docking.update(dockInputs, now_ns)
         snapshot["docking"] = dockUpdate.to_dict()
-
-
-       
-
 
 
         newState, reason = step(currState, snapshot)

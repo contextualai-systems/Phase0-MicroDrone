@@ -205,10 +205,10 @@ Every command then passes through `check_for_motion()` ([`motion_engine/safety_a
 The bird comes from CV's `ComputerVision` ([`cv/computer_vision.py`](../cv/computer_vision.py)), not from the scenario script:
 
 1. At the start of a run, `build_temp_fixture(scenario, duration_ms)` turns the scenario's bird events into a CV fixture: 10 fps (one frame per tick), not looping, and as long as the run. The bird is "no bird" (`BIRD_GONE`) until an event changes it.
-2. CV only reads fixtures from a file, so the loop writes the fixture to a temporary file, starts the camera from it, and the file is deleted straight away. The timestamp mapper is the identity, because the camera and the simulation clock both start at 0.
+2. The loop passes that fixture straight to CV with `start_camera(scenario=fixture)`. The timestamp mapper is the identity, because the camera and the simulation clock both start at 0.
 
    `run_world(..., camera_fixture=path)` skips steps 1 and 2 and starts the camera from one of CV's own fixture files instead, as it is. The tests run CV's 15 Hz `cv/scenarios/integration_cycle.json` this way.
-3. Every tick, after `assess()` and before Docking, `read_due(now_ns)` gives CV's latest sample:
+3. Every tick, before Safety's `assess()` ([integration contract](../INTEGRATION_README.md) section 3, step 2), `read_due(now_ns)` gives CV's latest sample:
    - A sample: its `to_bird_snapshot()` goes into `snapshot["bird"]` as it is. The loop does not restamp it, so a sample cached from an earlier tick keeps its older `timestamp_ns`.
    - `None`, before the first sample is due: `BIRD_UNAVAILABLE` (`valid` false, `detected` null, `reason` `"no_sample"`). `step()` treats it as no bird, and Docking as a camera failure.
    - `StopIteration`, when the fixture runs out: the run ends on that tick. This is the planned end of the scenario, not a camera failure, so the last tick that ran gets the run's `outcome`. A demo's own fixture is as long as the run, so this only happens with a shorter fixture passed as `camera_fixture`.
