@@ -3,9 +3,6 @@ import argparse
 import copy
 import time
 import dataclasses
-import json
-import os
-import tempfile
 
 from docking.states.docking_controller import DockingController, DockingInput, PadObservation
 from state_machine.contracts import MissionStatus
@@ -230,14 +227,8 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
     if camera_fixture is not None:
         cv.start_camera(camera_fixture, camera_id="front")
     else:
-        # CV only reads fixtures from a file, so write this run's bird fixture to a temporary one.
-        # start_camera reads the file straight away, so it can be deleted as soon as the camera starts.
         fixture = build_temp_fixture(scenario, duration_ms)
-        with tempfile.TemporaryDirectory() as folder:
-            fixture_path = os.path.join(folder, "fixture.json")
-            with open(fixture_path, "w") as file:
-                json.dump(fixture, file)
-            cv.start_camera(fixture_path, camera_id="front")  # after the file is closed, so CV reads all of it
+        cv.start_camera(scenario=fixture, camera_id="front")
 
     for tick in range(duration_ms // TICK_MS):
         current_time_ms = tick * TICK_MS
