@@ -45,7 +45,24 @@ First level that applies wins:
    | Bad alignment | descent |
    | Unknown position | everything |
 
-4. **Proceed** — permit the rest.
+4. **Launch checks** (on the ground only) — takeoff also needs:
+
+   | Needs | Reason code if not |
+   |---|---|
+   | Drone on the ground | `not_grounded` |
+   | Motors off | `motors_armed` |
+   | Sitting on the pad (within 0.25 m) | `not_on_pad` |
+   | Signal OK | `comm_loss` |
+   | Safe weather | `weather_hazard` |
+   | Battery 40% or more | (no code; see `battery_recovered`) |
+
+   In the air, bad weather and lost signal are emergencies. On the ground the
+   drone just waits on the pad until they clear, instead of taking off into a
+   storm and having to land again straight away. These reasons only appear on
+   the ground, so they never get mixed into Docking's reasons for coming home.
+   Whether there is a bird to chase is the state machine's call, not Safety's.
+
+5. **Proceed** — permit the rest.
 
 **Anything unknown counts as unsafe.** Missing, invalid, or stale (>0.5 s) data
 blocks whatever depends on it. A grounded emergency inhibits launch rather than
@@ -55,10 +72,10 @@ landing; holding survives an abort, because holding is how the drone stops.
 
 `config.py` (all threshold numbers) · `safety_policy.py` (situation check) ·
 `command_check.py` (order check) · `contracts.py` (`SafetyEvent`, the
-report format) · `safety_decision.py` (original placeholder)
+report format)
 
 ```
-python -m unittest tests.test_safety_policy tests.test_command_check tests.test_safety_event tests.test_safety_decision -v
+python -m unittest tests.test_safety_policy tests.test_command_check tests.test_safety_event -v
 ```
 
 Simulation time is passed in as `now_ns`; nothing here reads the real clock.
@@ -186,5 +203,8 @@ state machine's hover goes through.
   sections and blocks everything. Needs the state machine team to confirm.
 - Launch and docking timeouts need coordinator-tracked time. (The 60 s return
   deadline is done.)
-- Logging not wired up; weather strings are a guess; `Command` is provisional,
-  since Motion already has `MotionCommand` with different fields.
+- Logging not wired up: `SafetyEvent` is ready, but `run_loop.py` doesn't
+  build one yet.
+- An emergency or abort on the ground still sends hover/land instead of
+  turning the motors off (DISARM).
+- Weather words are a guess; needs the simulation team to confirm.
