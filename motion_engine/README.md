@@ -51,10 +51,9 @@ Rules Motion enforces:
   are capped separately) is not settled and holds like any other command.
 - **Comm-loss landing.** An expired hold is not forever. If Motion stays in
   `expired_hold` with no newly accepted command for
-  `MotionLimits.comm_loss_land_timeout_ns` (default 10 s; `from_config()`
-  uses Safety's `COMM_LOSS_LAND_TIMEOUT_NS` once `safety_layer/config.py`
-  defines it, which has been requested from the Safety team; until then the
-  default applies, so nothing waits on that change), it lands
+  `MotionLimits.comm_loss_land_timeout_ns` (10 s, shared with Safety as
+  `COMM_LOSS_LAND_TIMEOUT_NS` in `safety_layer/config.py`, read through
+  `from_config()`), it lands
   straight down where it is through the ordinary `LAND` path, before that
   tick's movement. Feedback reads `status = comm_loss_landing`,
   `flight_mode = land`, and `status_reason = reason = comm_loss_landing`
@@ -136,18 +135,17 @@ cmd = Command(command_id="vel-1", kind=K.SET_VELOCITY, mission_state="TRACKING",
 - **Emergency latch wins.** While `EMERGENCY_LAND` is latched, `SET_VELOCITY`
   is rejected (`emergency_descent_active`); an emergency during velocity mode
   replaces it immediately.
-- **Safety permission.** Safety does not map `SET_VELOCITY` yet, so it
-  fails closed: it refuses the command as `unsupported_kind` and substitutes
-  a HOVER. A coordinator that sends `SET_VELOCITY` today gets a hold, never
-  unchecked velocity flight. Once Safety maps it to `tracking` (requested,
-  like `MOVE_TO` and `TRACK_TARGET`), it flies whenever tracking is allowed.
-  No Motion change is needed either way.
-- **Safety's replacements.** Safety builds a HOVER/LAND/EMERGENCY_LAND/DISARM
-  replacement by copying the original command, which would copy the velocity
-  too, and Motion rejects a velocity on any other kind.
-  `safety_adapter.check_for_motion()` clears that copied velocity, so
-  Safety's stop is always accepted. It never changes Safety's decision.
-  `tests/test_safety_adapter.py` covers both the unmapped and the mapped case.
+- **Safety permission.** Safety maps `SET_VELOCITY` to the `tracking`
+  permission, the same as `MOVE_TO` and `TRACK_TARGET`, so velocity is
+  blocked whenever tracking is (low battery, people nearby, and so on) and
+  replaced with a HOVER.
+- **Safety's replacements.** Safety clears the velocity when it substitutes
+  a HOVER, LAND, EMERGENCY_LAND or DISARM, because Motion rejects a velocity
+  on any other kind. `safety_adapter.check_for_motion()` clears it as well,
+  as a second line of defence, so Safety's stop is always accepted even if
+  that changes. It never changes Safety's decision. If a kind is ever left
+  unmapped, Safety refuses it as `unsupported_kind` and holds; both cases are
+  covered in `tests/test_safety_adapter.py`.
 
 ### DroneState contract
 

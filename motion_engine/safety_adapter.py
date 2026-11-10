@@ -21,18 +21,13 @@ there first.
 
 Velocity setpoints on Safety's replacements
 -------------------------------------------
-Safety builds a replacement by copying the original command and changing its
-kind and target. A `SET_VELOCITY` original therefore yields a HOVER, LAND,
-EMERGENCY_LAND or DISARM that still carries the old `velocity`, and Motion
-rejects any non-velocity kind with a velocity (`invalid_command`): Safety's own
-stop would fail. `check_for_motion()` clears `velocity` on such a replacement
-before Motion sees it. It never changes what Safety decided: the kind, the
+Motion rejects any non-velocity kind that carries a velocity
+(`invalid_command`). Safety clears the velocity when it builds a HOVER, LAND,
+EMERGENCY_LAND or DISARM replacement of a `SET_VELOCITY` command;
+`check_for_motion()` clears it too, as a second line of defence, so Safety's
+stop is always accepted. It never changes what Safety decided: the kind, the
 reasons and `allowed` are untouched, and an allowed command passes through as
 the same object.
-
-Until Safety maps `SET_VELOCITY` to a permission, Safety refuses it as
-`unsupported_kind` and substitutes a HOVER, so a coordinator that sends one
-gets a hold, never unchecked velocity flight.
 """
 
 from __future__ import annotations

@@ -25,6 +25,7 @@ SHARED = {
     "geofence_radius_m": "GEOFENCE_RADIUS_M",
     "arrival_tolerance_m": "POSITION_ARRIVAL_TOLERANCE_M",
     "yaw_tolerance_deg": "DOCK_YAW_TOLERANCE_DEG",
+    "comm_loss_land_timeout_ns": "COMM_LOSS_LAND_TIMEOUT_NS",
 }
 
 
@@ -52,23 +53,17 @@ def test_comm_loss_landing_fits_inside_the_return_deadline():
 def test_unshared_fields_are_only_the_documented_ones():
     """A new MotionLimits field must be mapped to config or listed here."""
     unshared = {f.name for f in fields(MotionLimits)} - set(SHARED)
-    assert unshared == {"min_altitude_m", "emergency_descent_mps", "comm_loss_land_timeout_ns"}
+    assert unshared == {"min_altitude_m", "emergency_descent_mps"}
 
 
 def test_comm_loss_timeout_follows_config_when_defined():
-    """Motion owns the 10 s default until Safety's config defines the constant;
-    once it does, from_config() uses Safety's value."""
-    base = {name: getattr(config, name) for name in SHARED.values()}
+    """from_config() uses the config's value, and keeps Motion's 10 s default
+    for a config source that does not define it."""
+    base = {name: getattr(config, name) for name in SHARED.values()
+            if name != "COMM_LOSS_LAND_TIMEOUT_NS"}
     assert MotionLimits.from_config(SimpleNamespace(**base)).comm_loss_land_timeout_ns == 10 * 1_000_000_000
     lim = MotionLimits.from_config(SimpleNamespace(**base, COMM_LOSS_LAND_TIMEOUT_NS=7 * 1_000_000_000))
     assert lim.comm_loss_land_timeout_ns == 7 * 1_000_000_000
-
-
-def test_comm_loss_timeout_from_the_real_config():
-    """Passes before and after Safety adds the constant: from_config() uses
-    Safety's value when there is one, Motion's default otherwise."""
-    expected = getattr(config, "COMM_LOSS_LAND_TIMEOUT_NS", MotionLimits().comm_loss_land_timeout_ns)
-    assert MotionLimits.from_config().comm_loss_land_timeout_ns == expected
 
 
 def test_from_config_follows_a_changed_config(monkeypatch):

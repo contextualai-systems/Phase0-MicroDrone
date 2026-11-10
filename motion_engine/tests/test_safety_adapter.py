@@ -45,16 +45,10 @@ def airborne_motion(alt=10.0):
 
 
 def test_safety_rules_on_every_kind_motion_accepts():
-    """A Motion kind Safety has no permission for would always be held.
-
-    SET_VELOCITY is the one exception Motion tolerates: Safety may not map it
-    yet (it is then refused and held, see below). If Safety does map it, it
-    must be the same permission as the other in-flight movement commands.
-    """
-    assert set(CONTRACT_KINDS) - {K.SET_VELOCITY} <= set(KIND_TO_ACTION)
-    assert set(KIND_TO_ACTION) <= set(CONTRACT_KINDS)
-    assert KIND_TO_ACTION.get(K.SET_VELOCITY, "tracking") == "tracking"
+    """A Motion kind Safety has no permission for would always be held."""
+    assert set(KIND_TO_ACTION) == set(CONTRACT_KINDS)
     assert set(KIND_TO_ACTION.values()) <= set(ACTIONS)
+    assert KIND_TO_ACTION[K.SET_VELOCITY] == KIND_TO_ACTION[K.TRACK_TARGET] == "tracking"
 
 
 # -- pass-through ------------------------------------------------------------
@@ -103,8 +97,8 @@ def velocity_cmd(cid, now_ns=0):
 
 
 def test_unmapped_set_velocity_is_refused_and_held(monkeypatch):
-    """Today's Safety: no permission for SET_VELOCITY, so it fails closed. The
-    HOVER it substitutes reaches Motion without the copied velocity."""
+    """If a kind is ever unmapped, Safety fails closed: it refuses it and
+    holds, and the HOVER reaches Motion without the velocity."""
     monkeypatch.delitem(KIND_TO_ACTION, K.SET_VELOCITY, raising=False)
     m = airborne_motion()
     out, decision = check_for_motion(velocity_cmd("v-1"), ALL_OK, 0)
@@ -116,9 +110,9 @@ def test_unmapped_set_velocity_is_refused_and_held(monkeypatch):
     assert m.pose.x == x0, "a refused velocity command must not move the drone"
 
 
-def test_set_velocity_follows_tracking_once_safety_maps_it(monkeypatch):
-    """The mapping requested from Safety, applied here so it is tested now."""
-    monkeypatch.setitem(KIND_TO_ACTION, K.SET_VELOCITY, "tracking")
+def test_set_velocity_follows_the_tracking_permission():
+    """Safety's mapping: velocity flies when tracking is allowed and becomes
+    a HOVER Motion accepts when it is blocked."""
     m = airborne_motion()
     c = velocity_cmd("v-1")
     out, decision = check_for_motion(c, ALL_OK, 0)
@@ -146,13 +140,9 @@ def test_emergency_replacement_of_a_velocity_command_is_accepted(monkeypatch, ma
 
 
 def test_grounded_emergency_disarm_of_a_velocity_command_is_accepted():
-    """Safety's grounded-emergency DISARM (safety PR #92) copies the command the
-    same way; it must reach Motion without the velocity."""
-    from safety_layer.safety_policy import SafetyAssessment
+    """Safety's grounded-emergency DISARM must reach Motion without the velocity."""
     import dataclasses
 
-    if "grounded" not in {f.name for f in dataclasses.fields(SafetyAssessment)}:
-        pytest.skip("this Safety version has no grounded DISARM replacement")
     m = MotionStub()
     m.arm()
     verdict = dataclasses.replace(assessment(emergency=True), grounded=True)

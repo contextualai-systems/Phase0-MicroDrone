@@ -207,8 +207,7 @@ class MotionLimits:
     emergency_descent_mps: float = 1.0
     #: Link-loss failsafe (simulation ns): after this long in `expired_hold`
     #: with no new accepted command, an airborne, armed vehicle lands in
-    #: place. Read from Safety's `COMM_LOSS_LAND_TIMEOUT_NS` when the config
-    #: defines it; until then this default applies.
+    #: place. Shared with Safety as `COMM_LOSS_LAND_TIMEOUT_NS`.
     comm_loss_land_timeout_ns: int = 10_000_000_000
 
     @classmethod
@@ -245,9 +244,8 @@ class MotionLimits:
             emergency_descent_mps=float(
                 getattr(source, "EMERGENCY_DESCENT_MPS", cls.emergency_descent_mps)
             ),
-            # Motion owns this default until Safety adds the constant to its
-            # config (requested from the Safety team); same pattern as
-            # EMERGENCY_DESCENT_MPS above.
+            # Defined in Safety's config; the getattr fallback keeps any other
+            # config source working, as for EMERGENCY_DESCENT_MPS above.
             comm_loss_land_timeout_ns=int(
                 getattr(source, "COMM_LOSS_LAND_TIMEOUT_NS", cls.comm_loss_land_timeout_ns)
             ),
