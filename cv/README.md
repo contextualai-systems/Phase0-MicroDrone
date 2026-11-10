@@ -157,8 +157,8 @@ python -m unittest discover -s tests -p 'test_computer_vision.py' -v
 python -m unittest discover -s tests -p 'test_cv*.py' -v
 ```
 
-Current coverage is 64 tests: 19 fixture/interface, 10 perception, 10 benchmark,
-17 tracking/shared-publication, and 8 temporal-benchmark tests. Tests run
+Current coverage is 65 tests: 19 fixture/interface, 10 perception, 10 benchmark,
+17 tracking/shared-publication, and 9 temporal-benchmark tests. Tests run
 headlessly, including temporary-video
 playback. `.github/workflows/cv-ci.yml` defines the same suites on Python 3.12
 and 3.14; configured CI is not itself evidence that a remote run passed.
@@ -334,7 +334,7 @@ full occlusion, long full occlusion, three missing camera frames, duplicate IDs,
 marker entry/exit/re-entry, and simultaneous rotation/tilt. The `rotation_tilt`
 scenario varies in-plane rotation and out-of-plane tilt independently for two
 markers (up to approximately 34 degrees each). Select it in playback to inspect
-tracking continuity as perspective changes; this is not an orientation-error metric.
+tracking continuity as perspective changes; pose accuracy is measured separately below.
 Markers have distinct evaluator entity IDs even
 when their printed IDs are duplicated. The generator's truth never enters the
 provider, detector, or tracker.
@@ -390,6 +390,20 @@ are excluded. End-to-end timing includes buffered JSONL logging from both CV
 layers; publication measures a local append callback, not network delivery.
 Replay checks image hashes and configuration. Accuracy should reproduce in the
 same software environment; execution timings will vary.
+
+Pose accuracy is recorded in `report.json` under each sequence's `pose_accuracy`,
+with a position/angular summary in `report.md` and per-frame results in
+`evaluations.jsonl`. Ground truth includes camera-relative orientation matrices.
+Matching uses marker ID and image corners, including distinct duplicate-ID markers.
+Errors compare fresh raw detections with camera-relative truth, not ENU conversions
+or retained track poses. Position x/y/z (metres), total angular error (degrees),
+and wrapped ZYX yaw/pitch/roll errors report bias, MAE, RMSE, and absolute p95.
+Euler components near gimbal lock are excluded and counted; total angular error
+remains available. Pose coverage and matched detections without usable poses are
+reported separately so missing estimates cannot appear as zero error. Older
+manifests lacking orientation truth exclude affected frames, counted as
+`frames_without_pose_truth`; their orientation is never guessed. Playback continues
+to display shared updates; evaluation results remain separate from runtime messages.
 
 These are baseline scripts with separated marker paths, not crossing-object,
 cross-camera, or real-world robustness evidence. No prediction or new motion,

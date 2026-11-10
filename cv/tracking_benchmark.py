@@ -15,7 +15,7 @@ from .camera_providers import ImageSequenceProvider
 from .perception_pipeline import PerceptionPipeline
 from .perception_publisher import PerceptionPublisher
 from .shared_perception import CameraToENU
-from .tracking_metrics import evaluate_sequence
+from .tracking_metrics import evaluate_sequence, evaluate_pose_frame, summarize_pose
 from .tracking_sequences import CALIBRATION, FPS, SCENARIOS, SIDE_M, make_sequence
 
 
@@ -80,7 +80,16 @@ def markdown(report):
         lines.append(f"| {name} | {r['tp']} / {r['fp']} / {r['fn']} | {r['unexpected_id_changes']} | "
                      f"{count(r['short_gap_reacquisition'])} | {count(r['new_id_after_expiry'])} | "
                      f"{count(r['ambiguity_refusal'])} | {r['confirmation']['p95_delay_ms']} |")
-    lines += ["", "Open playback.html in a browser for frame-by-frame annotated playback and exact payloads.",
+    lines += ["", "## Measured camera-relative pose accuracy", "",
+              "| Sequence | Usable poses / observable truth | Position RMSE x/y/z (m) | Angular error p95 (deg) |",
+              "| --- | --- | --- | --- |"]
+    for name, r in report["sequences"].items():
+        pose = r["pose_accuracy"]
+        xyz = " / ".join(str(pose["xyz_error_m"][axis]["rmse"]) for axis in "xyz")
+        lines.append(f"| {name} | {pose['pose_count']} / {pose['eligible_objects']} | {xyz} | {pose['rotation_error_deg']['p95_absolute']} |")
+    lines += ["", "Errors use fresh raw detections in camera coordinates, not retained tracks or ENU poses.",
+              "Old manifests without orientation truth have excluded frames, counted in report.json.",
+              "Open playback.html in a browser for frame-by-frame annotated playback and exact payloads.",
               "Full metrics and stage p50/p95/p99 timings are in report.json; evaluations.jsonl explains identity checks.",
               "Fully covered markers and missing frames are not observable detection opportunities. Duplicate-ID markers",
               "remain detection opportunities, but require refusal of association; they are excluded from identity continuity.",
@@ -123,7 +132,7 @@ def run(output, *, seed=2026, dataset=None, scenarios=SCENARIOS):
     metadata["source_sha256"] = {name: hashlib.sha256((Path(__file__).parent / name).read_bytes()).hexdigest()
         for name in ("tracking_sequences.py", "tracking_metrics.py", "tracking_benchmark.py", "tracking.py",
                      "perception_pipeline.py", "perception_publisher.py", "shared_perception.py", "camera_providers.py",
-                     "perception_types.py", "computer_vision.py")}
+                     "perception_types.py", "computer_vision.py", "benchmark_metrics.py")}
     reports, playback = {}, {}
     with (output / "events.jsonl").open("w", encoding="utf-8") as logs, \
          (output / "updates.jsonl").open("w", encoding="utf-8") as update_log, \
@@ -165,7 +174,7 @@ def run(output, *, seed=2026, dataset=None, scenarios=SCENARIOS):
             published = []
             publisher = PerceptionPublisher(session_id=f"sequence-{name}", publisher=published.append, log_sink=sink)
             provider = ImageSequenceProvider(images, fps=FPS, source_id=name, calibration_id=CALIBRATION.calibration_id)
-            updates, views = [], []
+            updates, views, pose_rows = [], [], []
             with PerceptionPipeline(provider, calibration=CALIBRATION, marker_side_m=SIDE_M,
                                     timestamp_mapper=lambda ns: ns, log_sink=sink) as pipeline:
                 for index, image in enumerate(images):
@@ -176,6 +185,7 @@ def run(output, *, seed=2026, dataset=None, scenarios=SCENARIOS):
                     observation = pipeline.read()
                     update = publisher.update(observation, now_ns=now, transform=transform)
                     elapsed = perf_counter_ns()-start
+                    pose_rows.append(evaluate_pose_frame(truth[index], observation))
                     update = replace(update, timings_ns=update.timings_ns + tuple(
                         (f"pixel_{k}", v) for k, v in observation.timings_ns) + (("end_to_end", elapsed),))
                     updates.append(update)
@@ -185,7 +195,9 @@ def run(output, *, seed=2026, dataset=None, scenarios=SCENARIOS):
                     save_image(output / relative, annotate(image, update, name))
                     views.append({"image": relative, "update": payload})
             reports[name], evaluations = evaluate_sequence(truth, updates)
-            for row in evaluations:
+            reports[name]["pose_accuracy"] = summarize_pose(pose_rows)
+            for row, pose_row in zip(evaluations, pose_rows):
+                row["pose_accuracy"] = pose_row
                 eval_log.write(json.dumps({"scenario": name, **row}, allow_nan=False)+"\n")
             playback[name] = views
     save_json(output / "manifest.json", metadata)

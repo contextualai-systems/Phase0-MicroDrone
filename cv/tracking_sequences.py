@@ -60,7 +60,8 @@ def make_sequence(name, seed=2026):
                 image[mask > 0] = 190
             objects.append({"entity_id": entity, "object_id": f"aruco:0:{marker_id}",
                             "observable": not (occluded or missing), "occluded": occluded,
-                            "corners_px": corners.tolist(), "position_camera_m": position.tolist()})
+                            "corners_px": corners.tolist(), "position_camera_m": position.tolist(),
+                            "rotation_camera_matrix": cv2.Rodrigues(rvec)[0].tolist()})
         images.append(None if missing else image)
         frames.append({"frame_index": index, "timestamp_ns": index*100_000_000,
                        "missing_frame": missing, "objects": objects})

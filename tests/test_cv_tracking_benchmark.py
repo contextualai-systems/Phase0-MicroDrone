@@ -4,16 +4,40 @@ from dataclasses import replace
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 
 from cv.shared_perception import PerceptionUpdate, SharedDetectionResult, TrackState, WorldPose
 from cv.tracking_benchmark import run
-from cv.tracking_metrics import evaluate_sequence
+from cv.tracking_metrics import evaluate_sequence, evaluate_pose_frame, summarize_pose
+from cv.perception_types import DetectionResult
 from cv.tracking_sequences import make_sequence, SCENARIOS
 
 
 class TrackingBenchmarkTests(unittest.TestCase):
+    def test_pose_errors_coverage_and_legacy_truth(self):
+        frame = self.truth(0)
+        obj = frame["objects"][0]
+        obj.update(position_camera_m=[0., 0., 1.], rotation_camera_matrix=np.eye(3).tolist())
+        detection = DetectionResult(obj["object_id"], "aruco_marker", obj["corners_px"],
+                                    position_x=.1, position_y=-.2, position_z=1.3,
+                                    orientation=(0., 0., np.sin(np.pi/12), np.cos(np.pi/12)),
+                                    pose_valid=True)
+        row = evaluate_pose_frame(frame, SimpleNamespace(detections=[detection]))
+        summary = summarize_pose([row])
+        self.assertAlmostEqual(summary["xyz_error_m"]["z"]["bias"], .3)
+        self.assertAlmostEqual(summary["rotation_error_deg"]["mae"], 30.)
+        self.assertEqual(summary["pose_coverage_all_truth"], 1.)
+        invalid = evaluate_pose_frame(frame, SimpleNamespace(detections=[replace(detection, pose_valid=False)]))
+        self.assertEqual(summarize_pose([invalid])["matched_without_usable_pose"], 1)
+        missing = evaluate_pose_frame(frame, SimpleNamespace(detections=[]))
+        self.assertEqual(summarize_pose([missing])["pose_coverage_all_truth"], 0.)
+        del obj["rotation_camera_matrix"]
+        self.assertIsNone(evaluate_pose_frame(frame, SimpleNamespace(detections=[detection])))
+        self.assertEqual(summarize_pose([None])["frames_without_pose_truth"], 1)
+        self.assertIsNone(summarize_pose([None])["rotation_error_deg"]["mae"])
+
     def truth(self, index, *, observable=True, duplicate=False):
         obj = {"entity_id": "A", "object_id": "aruco:0:17", "observable": observable,
                "corners_px": [[0, 0], [10, 0], [10, 10], [0, 10]]}
@@ -66,6 +90,8 @@ class TrackingBenchmarkTests(unittest.TestCase):
         self.assertEqual((metrics["tp"], metrics["fp"], metrics["fn"]), (72, 0, 0))
         self.assertEqual(metrics["identity_continuity"]["rate"], 1.)
         self.assertEqual(metrics["unexpected_id_changes"], 0)
+        self.assertEqual(metrics["pose_accuracy"]["pose_count"], 72)
+        self.assertTrue(np.isfinite(metrics["pose_accuracy"]["rotation_error_deg"]["p95_absolute"]))
 
     def test_short_gap_and_long_gap_have_different_id_expectations(self):
         frames = [self.truth(0), self.truth(3), self.truth(9)]

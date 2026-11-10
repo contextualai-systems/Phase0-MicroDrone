@@ -2,6 +2,31 @@
 
 from collections import Counter
 import numpy as np
+from .benchmark_metrics import evaluate_frame, summarize
+
+
+def evaluate_pose_frame(frame, observation):
+    """Evaluate fresh camera-relative detections only, never retained tracks.
+
+    Older manifests lack orientation truth; mark those frames unavailable.
+    """
+    truth = [obj for obj in frame["objects"] if obj["observable"]]
+    if any("rotation_camera_matrix" not in obj for obj in truth):
+        return None
+    targets = [{"object_id": obj["object_id"], "corners_px": obj["corners_px"],
+                "position_m": obj["position_camera_m"],
+                "rotation_matrix": obj["rotation_camera_matrix"]} for obj in truth]
+    return evaluate_frame(targets, observation.detections or ())
+
+
+def summarize_pose(rows):
+    available = [row for row in rows if row is not None]
+    summary = summarize(available)
+    keys = ("eligible_objects", "pose_count", "pose_coverage_all_truth", "pose_coverage_matched",
+            "matched_without_usable_pose", "malformed_valid_poses", "xyz_error_m",
+            "rotation_error_deg", "yaw_pitch_roll_error_deg", "euler_excluded_poses")
+    return {"coordinate_frame": "camera", "frames_without_pose_truth": len(rows)-len(available),
+            **{key: summary[key] for key in keys}}
 
 
 def fraction(success, count):
