@@ -2,13 +2,51 @@
 
 [Shared integration contract](../INTEGRATION_README.md)
 
-CV supports two paths: `ComputerVision` supplies prescribed bird observations
-for the existing mission loop; `PerceptionPipeline` detects ArUco markers from
-synthetic images or recorded video and optionally estimates camera-relative pose.
-Neither path decides mission state or issues motion commands. No hardware,
-PX4, ROS, or independent mission loop is required.
+CV answers **what the camera sees**. It implements image ingestion, ArUco
+detection, camera-relative pose estimation, camera-local tracking, and shared
+observation publication. It does not select mission states, issue motion commands,
+or grant tracking/docking permissions.
+
+**Current status:** the standalone CV pipeline, shared publisher, synthetic
+benchmarks, and diagnostic demos are implemented. The state-machine run loop
+still uses scripted bird/alignment inputs; it does not yet consume
+`PerceptionUpdate`. Hardware capture and ROS2 transport are not implemented.
+
+| Component | Implemented behavior | Boundary / limitation |
+| --- | --- | --- |
+| `computer_vision.py` | Scheduled, prescribed bird fixtures and schema-v1 bird snapshots | Compatibility path; no pixel-based bird recognition |
+| `camera_providers.py` | Common `read() -> FrameSample` / `close()` interface, synthetic image sequences, recorded video, clean marker renderer | No live-camera provider; video assumes constant FPS and known frame count |
+| `perception_pipeline.py`, `perception_types.py` | Pixel-based ArUco detection, calibrated pose, internal `DetectionResult` in `CVObservation` | Camera-relative geometry; confidence is null; no tracking in the raw pipeline |
+| `shared_perception.py`, `perception_publisher.py` | Shared `PerceptionUpdate`, detection provenance, ENU conversion, local callback publication | Requires explicit simulation mapping and capture-time transform; no ROS2 messages/transport |
+| `tracking.py` | Persistent ArUco IDs, confirmation, retention, expiry, reset | One camera/source per publisher; no prediction or cross-camera association |
+| `benchmark_dataset.py`, `benchmark_metrics.py`, `benchmark.py` | Seeded degradation sweeps, saved-image replay, detection/pose metrics and latency reports | Single-marker scenes; benchmarks raw perception, not full tracking performance |
+| `tracking_sequences.py`, `tracking_metrics.py`, `tracking_benchmark.py` | Multi-marker temporal sequences, truth-based identity checks, lifecycle audits, timing reports, annotated browser playback | Scripted synthetic baseline; no Kalman prediction or general-object/cross-camera tracking |
+
+```mermaid
+flowchart LR
+    subgraph CV[CV subsystem]
+        A[Camera Provider] --> B[Preprocessing]
+        B --> C[ArUco Detection]
+        C --> D[Camera-relative Pose]
+        D --> E[Capture-time ENU Adapter]
+        E --> F[Tracking and Retention]
+        F --> G[PerceptionUpdate Publisher]
+    end
+    INPUT[Synthetic Images or Recorded Video] --> A
+    CONTEXT[Caller: Clock Mapping and Capture-time Transform] --> E
+    G --> OUTPUT[Coordinator and Consumer Adapters]
+```
+
+The prescribed bird fixture path is separate from this pixel pipeline. Both use
+injected logging sinks. Synthetic evaluation truth stays outside the detector
+and tracker. Identity tracking can continue without ENU pose; unavailable world
+geometry is represented explicitly as null.
 
 ## Coordinator interface
+
+This section describes the existing bird fixture adapter, available for coordinator
+integration. The pixel-based shared contract is documented under
+[Coordinator-facing PerceptionUpdate](#coordinator-facing-perceptionupdate).
 
 ```python
 from cv.computer_vision import ComputerVision
@@ -31,6 +69,19 @@ except StopIteration:
 finally:
     cv.stop_camera()
 ```
+
+The coordinator can also pass an in-memory fixture without writing a file:
+
+```python
+# fixture is a dict using the same schema as cv/scenarios/*.json.
+cv.start_camera(scenario=fixture, camera_id="front")
+# For JSON text, first decode it with json.loads(json_text).
+```
+
+Supply either `scenario_path` or `scenario`, not both. Omitting both loads the
+default demo. In-memory fixtures use the same validation and are deep-copied,
+so later edits to the caller's dictionary do not change an active session.
+Stop the camera before starting another fixture; scheduling and timestamps are unchanged.
 
 `read_due(now_ns)` consumes all samples due at the supplied simulation time and
 returns the latest one. A 15 Hz fixture in a 10 Hz loop can consume more than one
@@ -99,33 +150,33 @@ In WSL, use the existing CV environment and run from the repository root:
 ```bash
 source ~/venvs/contextualai-cv/bin/activate
 cd /mnt/c/Users/capta/Documents/RCOS/ContextualAI/Phase0-MicroDrone
-python -m unittest discover -s tests -p "test_computer_vision.py" -v
-python -m unittest discover -s tests -p "test_cv_perception.py" -v
-python -m cv.visual_demo
+# Install dependencies if this environment has not been set up:
+python -m pip install -r cv/requirements.txt
+# Full CV suite:
+python -m unittest discover -s tests -p 'test_computer_vision.py' -v
+python -m unittest discover -s tests -p 'test_cv*.py' -v
 ```
 
-These run 17 fixture tests and 10 perception tests respectively. Verbose output
-shows each test and its outcome; any failed assertion prints a traceback. Tests
-are headless, including the test that writes and reads a temporary video. The
-visual demo writes `cv/synthetic_output/visual_demo/comparison.png` with detected
-corners and known versus estimated XYZ for centered, tilted, and empty scenes.
-Open that image in VS Code. Its `results.json` contains full observations and
-`observations.jsonl` contains pipeline logs. These are actual pixel-derived
-results; the clean synthetic scene truth is used only for comparison.
+Current coverage is 64 tests: 19 fixture/interface, 10 perception, 10 benchmark,
+17 tracking/shared-publication, and 8 temporal-benchmark tests. Tests run
+headlessly, including temporary-video
+playback. `.github/workflows/cv-ci.yml` defines the same suites on Python 3.12
+and 3.14; configured CI is not itself evidence that a remote run passed.
 
-From the repository root, in a Python environment:
+For inspectable outputs:
 
 ```bash
-python -m pip install -r cv/requirements.txt
-python -m unittest discover -s tests -p test_computer_vision.py -v
-python -m unittest discover -s tests -p test_cv_perception.py -v
+python -m cv.visual_demo
+code cv/synthetic_output/visual_demo/comparison.png
 python -m cv.synthetic_frames --scenario cv/scenarios/integration_cycle.json --headless --fast --once
 ```
 
-The fixture path still produces prescribed booleans. Front and downward camera
-IDs are supported. The perception path below produces measured camera-relative
-marker pose, not world-frame docking alignment. Tested with Python 3.14,
-OpenCV 4.14.0, and NumPy 2.5.4 in the repository's `.venv`.
+The visual demo uses real pixel detection on centered, tilted, and empty scenes.
+It writes annotated images, `results.json`, and `observations.jsonl` into
+`synthetic_output/visual_demo/` (re-running replaces those demo outputs). The
+`synthetic_frames` command exports prescribed fixtures, not measured detections.
+Benchmark and tracking-demo commands appear in their respective sections below;
+they require new output directories.
 
 ## Pixel perception interface
 
@@ -178,6 +229,15 @@ temporal information, and a low reprojection error does not guarantee accurate
 pose. Calibration ID and resolution must match. Corner order is top-left,
 top-right, bottom-right, bottom-left in the decoded marker's orientation.
 
+Raw pose uses camera optical axes x right, y down, z forward. Marker-local axes
+are x right, y up, z out of its printed face; orientation is a quaternion rotating
+marker-local vectors into the camera frame. Metric pose requires intrinsics,
+distortion coefficients, matching image resolution/calibration ID, and physical
+marker side length. A detected marker without valid pose retains its identity and
+corners. Raw `DetectionResult.type` and envelope `camera_id` become `object_type`
+and `source_camera` in the separate shared publication contract; no legacy fields
+are renamed. Raw observations and shared updates are not interchangeable schemas.
+
 The clean renderer supports zero distortion; recorded-image pose estimation
 accepts OpenCV distortion coefficients. Images and calibration use BGR uint8
 pixels at the original resolution. Evaluation truth stays with the scene caller
@@ -226,7 +286,7 @@ out-of-plane tilt, brightness, horizontal motion blur, partial occlusion, physic
 marker size (scale), background clutter, two negative scenes, and a combined
 stress case. Each present frame currently contains one marker with a seeded ID
 and subpixel position variation. Multiple-marker detection has separate tests;
-multi-object benchmark scenes remain an extension. Default seed 2026 is the
+multi-object temporal scenes are covered by the separate tracking benchmark below. Default seed 2026 is the
 baseline; use a separately recorded seed for tuning and hold it fixed for comparisons.
 
 Clutter stays behind the marker, including its white cells. Occlusion covers a
@@ -262,7 +322,78 @@ expected to reproduce exactly; accuracy replay is tested with the same software.
 
 This benchmark changes no DetectionResult fields, tracking semantics, mission
 states, Motion APIs, or coordinator behavior. It benchmarks raw perception;
-tracking has its own validation suite and diagnostic replay below.
+tracking has its own temporal benchmark, validation suite, and diagnostic replay below.
+
+## Multi-object tracking benchmark
+
+This runner exercises actual pixels through `PerceptionPipeline` and
+`PerceptionPublisher`. It preserves the existing shared message format and uses
+an explicitly synthetic, fixed downward-camera-to-ENU transform. Each run has seven
+36-frame sequences at 10 Hz (252 frames total): independent marker motion, short
+full occlusion, long full occlusion, three missing camera frames, duplicate IDs,
+marker entry/exit/re-entry, and simultaneous rotation/tilt. The `rotation_tilt`
+scenario varies in-plane rotation and out-of-plane tilt independently for two
+markers (up to approximately 34 degrees each). Select it in playback to inspect
+tracking continuity as perspective changes; this is not an orientation-error metric.
+Markers have distinct evaluator entity IDs even
+when their printed IDs are duplicated. The generator's truth never enters the
+provider, detector, or tracker.
+
+```bash
+# From the repository root, in the activated WSL contextualai-cv environment:
+python -m unittest discover -s tests -p 'test_cv_tracking_benchmark.py' -v
+python -m cv.tracking_benchmark --output cv/synthetic_output/tracking_run --seed 2026
+python -m cv.tracking_benchmark --dataset cv/synthetic_output/tracking_run --output cv/synthetic_output/tracking_replay
+code cv/synthetic_output/tracking_run/report.md
+```
+
+Use a NEW output directory for each run. Open `playback.html` in a browser to
+select a sequence, scrub individual frames, or play at 10 Hz. It works locally
+without a web server or GUI support in Python. The JSON beneath each image is
+the actual shared update. Green boxes represent current detections; retained
+tracks are listed with measurement ages rather than drawn as fresh detections.
+The individual `annotated_*.png` images can also be opened directly in VS Code.
+
+| Artifact | Contents |
+| --- | --- |
+| `manifest.json` | Sequence truth, per-frame image paths/hashes, seed, calibration, software/source hashes, and tracking settings |
+| `<sequence>/input_*.png` | Exact available input frames; missing images have null paths in the manifest |
+| `<sequence>/annotated_*.png`, `playback.html` | Inspectable detections, IDs, lifecycle state, ages, and complete payloads |
+| `events.jsonl` | Pipeline and shared publisher logs, labeled by sequence |
+| `updates.jsonl` | Returned shared updates with benchmark timing entries |
+| `evaluations.jsonl` | Per-frame detection counts and identity checks against truth |
+| `report.json`, `report.md` | Per-sequence metrics and readable summary |
+
+The evaluator matches printed identity and ordered corners within 8 px RMS,
+one-to-one, including duplicate-ID detections at distinct image locations. It
+reports detection TP/FP/FN, identity continuity, unexpected ID changes, same-ID
+reacquisition before expiration, new IDs after long gaps, explicit ambiguity
+refusal, and confirmation delay. Metrics include opportunity counts; empty
+denominators are null. Missing detections count against applicable identity
+checks rather than removing those opportunities. Duplicate detections must be
+present AND explicitly refused association to pass the ambiguity check.
+
+Unlike the single-frame degradation benchmark, fully covered markers and missing
+frames are intentionally excluded from observable detection opportunities. They
+remain in scene truth and drive temporal gap scenarios. Confirmation episodes
+start at the first uniquely observable frame and restart after an expiry-length
+gap; unconfirmed episodes are counted separately from delay percentiles.
+Lifecycle audits separately check emitted expiry timing and that retained states
+do not refresh measurement/estimate timestamps or change pose. These audits use
+emitted last-observed times and are not a substitute for truth-based identity or
+localization metrics.
+
+Reports include adapter, tracking, local publication, raw pixel-stage, and total
+end-to-end p50/p95/p99 latency. All frames, including cold starts, are measured.
+Images are preloaded; generation, PNG loading/saving, evaluation, and annotation
+are excluded. End-to-end timing includes buffered JSONL logging from both CV
+layers; publication measures a local append callback, not network delivery.
+Replay checks image hashes and configuration. Accuracy should reproduce in the
+same software environment; execution timings will vary.
+
+These are baseline scripts with separated marker paths, not crossing-object,
+cross-camera, or real-world robustness evidence. No prediction or new motion,
+state-machine, or shared-message behavior is introduced.
 
 ## Coordinator-facing PerceptionUpdate
 
@@ -465,137 +596,47 @@ transport or retry queue. ROS2 message/IDL bindings and uXRCE-DDS remain pending
 
 ## Phase 0 perception roadmap
 
-The first implementation slice above is complete; the remaining work below is
-planned. CV answers **what the camera sees**:
-acquisition, detection, camera-relative pose, object tracking, and observations.
-Action selection remains with Navigation, Docking, Safety, and the coordinator.
-Preserve the existing fixture API while developing the image-based pipeline.
+The implemented components and contracts above are the current source of truth.
+Remaining work is split by ownership and does not imply that existing detection,
+pose, or tracking interfaces must be rebuilt.
 
-```mermaid
-flowchart LR
-    A[Camera provider] --> B[Preprocessing]
-    B --> C[Detection]
-    C --> D[Pose estimation]
-    D --> X[Capture-time ENU adapter]
-    X --> E[Tracking and retention]
-    E --> F[PerceptionUpdate publisher]
-```
-
-### Providers and detection contract
-
-Use a common provider interface (`read() -> FrameSample`, `close()`) for synthetic
-images and recorded video, with physical cameras supported later. Samples carry
-pixels, frame number, source/camera identity, capture timestamp and clock,
-validity/reason, and calibration identity. Keep missing input, processing failure,
-valid empty frames, and finite-source EOF distinct. Preserve source timestamps;
-the coordinator owns clock mapping and scheduling.
-
-Prefer the existing `CVObservation` interface and serialized field names wherever
-they convey the required information. Extend it additively for perception; do not
-replace it or introduce aliases solely to match the suggested terminology.
-
-| Suggested information | Current interface | Decision |
+| Remaining Phase 0 work | Owner | Completion evidence |
 | --- | --- | --- |
-| Timestamp | `timestamp_ns`, `clock`, optional mapped simulation time | Keep; already explicit about units and clock |
-| Source camera | `camera_id` | Keep; no `source_camera` alias needed |
-| Confidence | Nullable `confidence` in the observation and `to_dict()` | Keep; currently unset by the fixture reader and omitted from `to_bird_snapshot()` |
-| Object type | `bird_type`, serialized as `bird.type`; snapshot uses `type` | Keep for bird observations; use `type` for future generic detection entries |
-| Object ID | None; `source_id` identifies the input source | Add per-object identity; do not repurpose `source_id` |
-| X/Y/Z position | Only fixture `distance_m` | Add camera-relative position; scalar distance cannot encode 3D location |
-| Orientation | None | Add nullable orientation |
-| Tracking ID | None; `frame_index` identifies a frame | Add persistent track identity |
+| Schedule CV reads and heartbeats, preserve capture timestamps, handle EOF/failures and resets | Coordinator with CV support | Integrated tests at differing camera/tick rates, including stale cached input |
+| Supply capture-time ENU transforms and adapt the designated pad marker | Coordinator / pose supplier / Docking | Explicit frame/origin agreement; missing transforms produce unavailable alignment |
+| Consume detections and retained tracks according to freshness/validity policy | Safety / Docking / coordinator | Retained identity never silently becomes a fresh measurement or descent permission |
+| Expand temporal evaluation beyond the implemented baseline sequences | CV | Crossing/overlapping paths, broader degradation sweeps, and consumer-agreed robustness limits |
+| Agree usable accuracy/latency limits and condition envelope | CV and consumers | Measured acceptance criteria; synthetic range not presented as hardware capability |
+| ROS2 message definitions and serialization mapping | CV / integration | Message definitions preserve timestamps, nullability, validity, frame, and measured/retained distinctions; not implemented yet |
+| Integrated perception-to-consumer replay | Cross-team | Logs explain observed, absent, missing, stale, retained, expired, and reacquired states without drone hardware |
 
-The current interface therefore covers part of the suggested contract, not all
-of it. Preserve its availability/status, provenance, scheduling, and legacy bird
-snapshot semantics. The standalone image exporter already has a `detections`
-list (`label`, `bbox_xywh`, `confidence`), but it contains prescribed metadata,
-not measured pose or persistent identity, and is not the runtime observation API.
+See [required downstream changes](#required-downstream-changes-not-implemented-here)
+for concrete coordinator, Motion/pose-supplier, Docking, and Safety tasks. These
+are documented requirements, not changes already made to those modules.
 
-The implemented optional generic `detections` collection sits alongside the existing bird
-fields, with processing status and stage timings at frame level. Keep timestamps
-and `camera_id` in the shared frame envelope rather than duplicating them per
-object. Existing fixture-only callers must continue to work; distinguish an
-unpopulated generic result from a successfully processed empty list. Version any
-serialized extension explicitly and test legacy adapters. Generic detections do
-not populate the legacy bird fields automatically.
+The estimator boundary (`LastMeasurementEstimator.observe()` / `advance()`) and
+nullable velocity/covariance fields already provide basic Kalman integration
+points. A predictive estimator or Kalman filter is a possible later Phase 0
+extension; it is not required before coordinator integration. Prediction would
+need its own uncertainty, timestamp, and consumer-policy validation. Current
+tracking only measures or retains state.
 
-Proposed per-object additions reuse existing terminology where applicable:
+## Phase 1 boundary
 
-| Field | Meaning |
-| --- | --- |
-| `object_id`, `type` | Initially dictionary/marker ID and `aruco_marker`; `type` follows the existing serialized convention |
-| `confidence`, `confidence_method` | Nullable score and its meaning; do not invent a probability |
-| `position_x`, `position_y`, `position_z` | Marker-center translation in camera-relative metres; null without valid pose |
-| `orientation` | Quaternion `{x,y,z,w}` rotating marker-frame vectors into camera-frame vectors |
-| `tracking_id` | Camera/session-local track instance, distinct from marker identity |
-| `corners_px` | Ordered image corners |
-| `pose_valid`, `pose_reason`, `reprojection_error_px` | Pose validity and quality, independent of detection success |
+Phase 0 establishes a reproducible perception architecture using synthetic inputs
+and recorded video. Phase 1 validates and operates that architecture with live
+sensors on the intended moving hardware:
 
-Use camera axes x right, y down, z forward; marker axes x right, y up, z out of
-the printed face. Record the solver's corner order. Metric pose requires camera
-intrinsics, distortion, resolution, and physical marker size. Resizing/cropping
-must preserve calibration consistency. A detection without calibration retains
-its corners and identity with null pose. Missing quantities are null, not zero.
+- Live-camera drivers, exposure control, connection recovery, and measured
+  intrinsics/distortion/mounting calibration.
+- Camera/vehicle time synchronization and capture-time pose on real hardware.
+- Deployed ROS2/uXRCE-DDS transport and its latency/failure behavior.
+- Onboard throughput, power/thermal constraints, dropped-frame handling, and
+  controlled hardware/field validation under real lighting, vibration, and motion.
+- Estimator tuning and optional additional detectors/depth sources where required
+  by the mission; neither YOLO nor bird recognition is a prerequisite for the
+  current Phase 0 handoff.
 
-Camera coordinates require an explicit calibrated transform before use in the
-integration loop's ENU frame. An ArUco detection must never become a bird
-observation. Replacing synthetic docking alignment requires a validated adapter.
-
-### Synthetic datasets and evaluation
-
-Generate seeded scenes with calibrated marker geometry and separate ground-truth
-manifests. The detector and tracker receive pixels, never truth metadata. Include
-clean scenes, marker-free negatives, clutter, partial occlusion, variable lighting,
-motion blur, rotation, scaling, and multiple markers. Save calibration, marker
-sizes, poses, seeds, and degradation parameters for replay. Keep evaluation seeds
-separate from tuning scenes.
-
-Benchmark distance, rotation, lighting, projected scale, and occlusion. Physical
-range requires known marker size and calibration; pixel resizing alone cannot
-establish metres. Match predictions to truth one-to-one with declared identity
-and image-position tolerances, counting duplicates as false positives. Report:
-
-- Detection rate `TP/(TP+FN)`, precision, FP/FN counts, and false positives per
-  negative frame, with sample counts and uncertainty intervals.
-- X/Y/Z bias, MAE, RMSE, and p95 error; yaw/pitch/roll errors with a declared Euler
-  convention and wrapped angles, plus quaternion angular error.
-- Pose-valid coverage and failures separately from errors on successful poses.
-- Maximum reliable tested range under a declared condition envelope and agreed
-  detection/pose thresholds. Synthetic results do not establish hardware range.
-
-### Tracking and instrumentation
-
-Associate marker identities within each camera/session. Preserve track IDs over
-a configured short gap, expire them using source time, and reset on source restart.
-Flag duplicate marker IDs as ambiguous. Retained tracks must not appear as fresh
-observations. Cross-camera association and prediction can wait.
-
-Log every processed frame, including empty/failed frames, with timestamps, frame
-number, detections, confidence, pose, track IDs, and processing times. Record run
-configuration, software versions, calibration, dataset seed/manifest, and dropped
-frames. Retain input media or a reproducible manifest for later investigation.
-
-Measure acquisition, preprocessing, detection, pose estimation, tracking, and
-publication with a monotonic performance clock. Publication timing covers the
-local callback/queue operation; measure logging overhead separately. Report total
-and stage p50/p95/p99 latency with machine, resolution, and sample counts.
-
-### Implementation order and completion
-
-1. **Implemented:** frame/detection contracts and synthetic/recorded providers.
-2. **Implemented:** pixel-based ArUco detection, clean-scene calibrated pose,
-   per-frame logs/timing hooks, and fixture compatibility tests.
-3. **Implemented:** seeded single-marker degradation sweeps, saved-image replay,
-   detection/pose benchmarks, run manifests, and aggregate latency reports.
-4. **Implemented:** camera-local marker tracking, retention/expiry, shared
-   detections and track snapshots, and explicit capture-time ENU transformation.
-5. **Remaining:** coordinator wiring and transform supply, multi-object benchmark
-   scenes, predictive estimation/Kalman filtering, and ROS2 transport bindings.
-
-Acceptance requires the same detector to process synthetic images and recorded
-video, reproducible benchmark reports, and logs explaining failures without drone
-hardware. Test pixel behavior, pose accuracy, lifecycle errors, tracking expiry,
-and evaluation accounting. Changing truth metadata alone must not change output.
-
-Defer bird species classification, ML models, threat classification, behavior
-prediction, deterrence selection, and autonomous mission planning.
+CV continues to publish observations and estimates in either phase. Mission
+planning, threat assessment, deterrence selection, and decisions about following,
+docking, recovery, or aborting remain outside its responsibility.
