@@ -184,3 +184,135 @@ class TestSeveralProblemsAtOnce(unittest.TestCase):
         self.assertIn(GEOFENCE_BREACH, decision.reasons)
         self.assertIn(ALTITUDE_CEILING, decision.reasons)
         self.assertIn(Reason.COMMAND_EXPIRED, decision.reasons)
+
+
+# A drone sitting on its pad. "flight_active" is still true when the motors
+# are on (just landed, or about to take off), which is when DISARM matters.
+ON_THE_PAD = {"grounded": True, "airborne": False}
+
+
+def on_the_pad(motors_on=True, **changes):
+    vehicle = dict(ON_THE_PAD)
+    vehicle.update(changes.pop("vehicle", {}))
+    return assess(snapshot(flight_active=motors_on, vehicle=vehicle, **changes), NOW)
+
+
+def emergency_landing_order(**changes):
+    return good_order(
+        command_id="sm-emergency",
+        kind=MotionCommandType.EMERGENCY_LAND,
+        mission_state="EMERGENCY_LAND",
+        expires_ns=None,
+        target=None,
+        **changes,
+    )
+
+
+def disarm_order(**changes):
+    return good_order(
+        command_id="sm-disarm",
+        kind=MotionCommandType.DISARM,
+        mission_state="DOCKED",
+        expires_ns=None,
+        target=None,
+        **changes,
+    )
+
+
+class TestOnTheGround(unittest.TestCase):
+    """On the ground, the safe replacement is DISARM (motors off)."""
+
+    def test_rejected_order_on_the_ground_becomes_disarm(self):
+        stopped = on_the_pad(context={"operator_abort": True})
+        decision = check_command(good_order(), stopped, NOW)
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.command.kind, MotionCommandType.DISARM)
+        self.assertIsNone(decision.command.target)
+        self.assertEqual(decision.command.source, "safety")
+        self.assertIsNone(decision.command.validate())
+
+    def test_emergency_on_the_ground_turns_motors_off_instead_of_landing(self):
+        storm = on_the_pad(environment={"weather": "storm"})
+        self.assertTrue(storm.emergency)
+        decision = check_command(good_order(), storm, NOW)
+        self.assertEqual(decision.command.kind, MotionCommandType.DISARM)
+        self.assertIn(EMERGENCY, decision.reasons)
+        self.assertIn("weather_hazard", decision.reasons)
+
+    def test_disarm_order_during_ground_emergency_passes_unchanged(self):
+        dying = on_the_pad(battery={"percent": 4.0})
+        order = disarm_order()
+        decision = check_command(order, dying, NOW)
+        self.assertTrue(decision.allowed)
+        self.assertIs(decision.command, order)
+        self.assertEqual(decision.reasons, ())
+
+    def test_in_the_air_still_hovers(self):
+        """The old behaviour in the air is unchanged."""
+        decision = check_command(good_order(expires_ns=NOW - 1), all_clear(), NOW)
+        self.assertEqual(decision.command.kind, MotionCommandType.HOVER)
+
+    def test_unknown_ground_status_counts_as_flying(self):
+        """Never tell a drone that might be flying to turn its motors off."""
+        snap = snapshot(context={"operator_abort": True})
+        snap["vehicle"].pop("grounded", None)
+        decision = check_command(good_order(), assess(snap, NOW), NOW)
+        self.assertEqual(decision.command.kind, MotionCommandType.HOVER)
+
+    def test_airborne_flag_wins_over_grounded_flag(self):
+        confused = on_the_pad(vehicle={"airborne": True}, context={"operator_abort": True})
+        self.assertFalse(confused.grounded)
+        decision = check_command(good_order(), confused, NOW)
+        self.assertNotEqual(decision.command.kind, MotionCommandType.DISARM)
+
+    def test_stale_position_never_counts_as_grounded(self):
+        stale = on_the_pad(vehicle={"timestamp_ns": NOW - 2 * config.NS_PER_S})
+        self.assertFalse(stale.grounded)
+        decision = check_command(good_order(), stale, NOW)
+        self.assertNotEqual(decision.command.kind, MotionCommandType.DISARM)
+
+    def test_motion_accepts_the_disarm_on_the_ground(self):
+        """End to end: Motion's simulator really turns the motors off."""
+        from motion_engine.motion_stubs import MotionStub
+
+        motion = MotionStub()
+        motion.arm()
+        self.assertTrue(motion.armed)
+        storm = on_the_pad(environment={"weather": "storm"})
+        decision = check_command(good_order(), storm, NOW)
+        ack = motion.submit(decision.command, NOW)
+        self.assertTrue(ack.accepted, ack.reason)
+        self.assertFalse(motion.armed)
+
+
+class TestEmergencyPassThrough(unittest.TestCase):
+    """An EMERGENCY_LAND during an emergency is already the right answer."""
+
+    def dying(self):
+        return assess(snapshot(battery={"percent": 4.0}), NOW)
+
+    def test_emergency_landing_passes_through_unchanged(self):
+        order = emergency_landing_order()
+        decision = check_command(order, self.dying(), NOW)
+        self.assertTrue(decision.allowed)
+        self.assertIs(decision.command, order)
+        self.assertEqual(decision.command.command_id, "sm-emergency")
+        self.assertEqual(decision.reasons, ())
+
+    def test_stale_emergency_landing_is_replaced_with_a_fresh_one(self):
+        order = emergency_landing_order(issued_ns=NOW - config.NS_PER_S)
+        decision = check_command(order, self.dying(), NOW)
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.command.kind, MotionCommandType.EMERGENCY_LAND)
+        self.assertEqual(decision.command.issued_ns, NOW)
+
+    def test_other_orders_are_still_replaced(self):
+        decision = check_command(good_order(), self.dying(), NOW)
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.command.kind, MotionCommandType.EMERGENCY_LAND)
+
+    def test_disarm_in_the_air_is_still_replaced(self):
+        """Motors off mid-flight is a crash, so it never passes through."""
+        decision = check_command(disarm_order(), self.dying(), NOW)
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.command.kind, MotionCommandType.EMERGENCY_LAND)
