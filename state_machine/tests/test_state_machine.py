@@ -5,8 +5,9 @@ import pytest
 
 from safety_layer.safety_policy import assess
 from state_machine import run_loop
-from state_machine.demos import BIRD_GONE, BIRD_SEEN, DEMOS
-from state_machine.run_loop import run_world
+from cv.synthetic_frames import validate_scenario
+from state_machine.demos import BIRD_DEMO_INIT, BIRD_GONE, BIRD_SEEN, DEMOS
+from state_machine.run_loop import build_temp_fixture, run_world
 from state_machine.state_machine import step, State
 from motion_engine.contracts import MemoryLogSink
 
@@ -455,6 +456,26 @@ def birds_seen_by_step(monkeypatch, duration_ms, **run_args):
     return birds
 
 
+# CV's 1 Hz fixture: a bird in 3 samples (0 s, 1 s, 2 s). At 10 Hz the cached sample
+# goes past Safety's 0.5 s limit before the next one arrives.
+STALE_SAMPLES = str(Path(__file__).resolve().parents[2] / "cv" / "scenarios" / "stale_samples.json")
+MAX_AGE_NS = 500_000_000  # Safety's MAX_OBSERVATION_AGE_S
+
+
+def snapshots_seen_by_step(monkeypatch, duration_ms, **run_args):
+    """Run the loop and record every tick's snapshot as step() receives it, after Safety has assessed it."""
+    snapshots = []
+    real_step = run_loop.step
+
+    def recording_step(state, snapshot):
+        snapshots.append(snapshot)
+        return real_step(state, snapshot)
+
+    monkeypatch.setattr(run_loop, "step", recording_step)
+    run_world(duration_ms, **run_args)
+    return snapshots
+
+
 def test_cv_bird_keeps_its_own_sample_time(monkeypatch):
     # At 15 Hz the samples fall between the 10 Hz ticks. The bird must keep its sample's time,
     # not be restamped with the tick's time.
@@ -500,3 +521,62 @@ def test_motion_logger_gets_motion_records():
     assert sink.records  # the logger reached Motion
     assert all(record.module == "MOTION" for record in sink.records)
     assert sink.records[0].event == "arm"  # the launch is the first thing Motion is asked to do
+
+
+def test_safety_blocks_launch_and_tracking_on_missing_frames(monkeypatch):
+    # integration_cycle.json's last second (12-13 s) is missing frames. Safety reads the camera
+    # from environment.camera_ok, so the loop has to turn missing CV input into a camera failure.
+    snapshots = snapshots_seen_by_step(monkeypatch, 15000, scenario=[], camera_fixture=INTEGRATION_CYCLE)
+    missing = [snapshot for snapshot in snapshots if snapshot["bird"]["valid"] is False]
+
+    assert len(missing) == 10  # the ticks at 12.0-12.9 s
+    for snapshot in missing:
+        safety = snapshot["safety"]
+        assert safety["permissions"]["launch"] is False
+        assert safety["permissions"]["tracking"] is False
+        assert "camera_failure" in safety["reasons"]
+
+
+def test_safety_blocks_launch_and_tracking_on_stale_samples(monkeypatch):
+    # stale_samples.json is 1 Hz. Once the cached sample is older than Safety's 0.5 s limit,
+    # the camera counts as failed; while it's fresh, it doesn't.
+    snapshots = snapshots_seen_by_step(monkeypatch, 3000, scenario=[], camera_fixture=STALE_SAMPLES)
+
+    stale = [s for s in snapshots if s["timestamp_ns"] - s["bird"]["timestamp_ns"] > MAX_AGE_NS]
+    fresh = [s for s in snapshots if s["timestamp_ns"] - s["bird"]["timestamp_ns"] <= MAX_AGE_NS]
+    assert len(stale) == 12  # 0.6-0.9 s, 1.6-1.9 s and 2.6-2.9 s
+    assert len(fresh) == 18
+
+    for snapshot in stale:
+        safety = snapshot["safety"]
+        assert safety["permissions"]["launch"] is False
+        assert safety["permissions"]["tracking"] is False
+        assert "camera_failure" in safety["reasons"]
+    for snapshot in fresh:
+        assert "camera_failure" not in snapshot["safety"]["reasons"]
+
+
+def test_partial_bird_update_keeps_the_rest_of_the_bird():
+    # A scenario event only changes the fields it lists. A distance-only update after a sighting
+    # must keep detected and type, or CV rejects the fixture at startup.
+    scenario = [BIRD_DEMO_INIT, (500, {"bird": BIRD_SEEN}), (2000, {"bird": {"distance_m": 20.0}})]
+    gone_before = dict(BIRD_GONE)
+    fixture = build_temp_fixture(scenario, 3000)
+
+    validate_scenario(fixture)  # raises if any frame is incomplete
+    frames = [segment["bird"] for segment in fixture["segments"]]  # one frame per tick
+    assert frames[20] == {"detected": True, "type": "hawk", "distance_m": 20.0}  # 2.0 s: only the distance changed
+    assert frames[19] == {"detected": True, "type": "hawk", "distance_m": 30.0}  # 1.9 s: earlier frames unchanged
+    assert BIRD_GONE == gone_before  # the shared constant isn't changed either
+
+    run_world(3000, scenario=scenario)  # CV accepts it
+
+
+def test_partial_no_bird_update_clears_type_and_distance():
+    # {"detected": False} on its own must not leave the hawk's type and distance behind,
+    # because CV rejects a "no bird" frame that still has them.
+    scenario = [BIRD_DEMO_INIT, (500, {"bird": BIRD_SEEN}), (1000, {"bird": {"detected": False}})]
+    fixture = build_temp_fixture(scenario, 2000)
+
+    validate_scenario(fixture)
+    assert fixture["segments"][10]["bird"] == BIRD_GONE

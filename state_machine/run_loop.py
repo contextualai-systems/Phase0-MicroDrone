@@ -5,6 +5,7 @@ import time
 import dataclasses
 
 from docking.states.docking_controller import DockingController, DockingInput, PadObservation
+from safety_layer.config import MAX_OBSERVATION_AGE_S, NS_PER_S
 from state_machine.contracts import MissionStatus
 from state_machine.demos import DEMO_SCENARIO, DEMOS, BIRD_GONE
 from safety_layer.safety_policy import assess
@@ -39,8 +40,12 @@ def build_temp_fixture(scenario, duration_ms):
     for tick in range(duration_ms // TICK_MS):
         time_ms = tick * TICK_MS
         for event_time_ms, event in scenario:
-            if event_time_ms == time_ms and "bird" in event is not None:
-                currentBird = event["bird"]
+            if event_time_ms == time_ms and "bird" in event:
+                # Merge into a new dict: earlier frames (and BIRD_GONE) share the old one
+                currentBird = {**currentBird, **event["bird"]}
+                if currentBird["detected"] is False:
+                    currentBird["type"] = None
+                    currentBird["distance_m"] = None
         segments.append({
             "frames": 1, "camera_ok": True, "bird": currentBird
         })
@@ -270,14 +275,20 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
             bird = BIRD_UNAVAILABLE.copy()
 
         snapshot["bird"] = bird.copy()
-        
+
+
+        cv_usable = False
+        if bird["valid"] and bird["timestamp_ns"] is not None and now_ns - bird["timestamp_ns"] <= MAX_OBSERVATION_AGE_S * NS_PER_S:
+            cv_usable = True
         # remember when the bird went missing
         if bird["valid"] and bird["detected"]:
             bird_absent = None
         elif bird["valid"] and not bird["detected"]:
             if (bird_absent is None):
                 bird_absent = bird["timestamp_ns"]
-        
+
+
+        snapshot["environment"]["camera_ok"] = snapshot["environment"]["camera_ok"] and cv_usable
         assessment = assess(snapshot, now_ns)
         snapshot["safety"] = dataclasses.asdict(assessment)
         
