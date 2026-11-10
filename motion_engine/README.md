@@ -53,7 +53,8 @@ Rules Motion enforces:
   `expired_hold` with no newly accepted command for
   `MotionLimits.comm_loss_land_timeout_ns` (default 10 s; `from_config()`
   uses Safety's `COMM_LOSS_LAND_TIMEOUT_NS` once `safety_layer/config.py`
-  defines it, which has been requested from the Safety team), it lands
+  defines it, which has been requested from the Safety team; until then the
+  default applies, so nothing waits on that change), it lands
   straight down where it is through the ordinary `LAND` path, before that
   tick's movement. Feedback reads `status = comm_loss_landing`,
   `flight_mode = land`, and `status_reason = reason = comm_loss_landing`
@@ -135,12 +136,18 @@ cmd = Command(command_id="vel-1", kind=K.SET_VELOCITY, mission_state="TRACKING",
 - **Emergency latch wins.** While `EMERGENCY_LAND` is latched, `SET_VELOCITY`
   is rejected (`emergency_descent_active`); an emergency during velocity mode
   replaces it immediately.
-- **Safety permission (pending).** Safety does not map `SET_VELOCITY` yet,
-  so the coordinator must not send it until it does. The Safety team has been
-  asked to map it to the `tracking` permission (like `MOVE_TO` and
-  `TRACK_TARGET`) and to drop any velocity when it substitutes a HOVER/LAND.
-  `tests/test_safety_adapter.py` marks those checks as expected failures
-  (`PENDING_SAFETY`) until the change lands.
+- **Safety permission.** Safety does not map `SET_VELOCITY` yet, so it
+  fails closed: it refuses the command as `unsupported_kind` and substitutes
+  a HOVER. A coordinator that sends `SET_VELOCITY` today gets a hold, never
+  unchecked velocity flight. Once Safety maps it to `tracking` (requested,
+  like `MOVE_TO` and `TRACK_TARGET`), it flies whenever tracking is allowed.
+  No Motion change is needed either way.
+- **Safety's replacements.** Safety builds a HOVER/LAND/EMERGENCY_LAND/DISARM
+  replacement by copying the original command, which would copy the velocity
+  too, and Motion rejects a velocity on any other kind.
+  `safety_adapter.check_for_motion()` clears that copied velocity, so
+  Safety's stop is always accepted. It never changes Safety's decision.
+  `tests/test_safety_adapter.py` covers both the unmapped and the mapped case.
 
 ### DroneState contract
 
@@ -148,6 +155,14 @@ cmd = Command(command_id="vel-1", kind=K.SET_VELOCITY, mission_state="TRACKING",
 the same class) is the formal vehicle-state contract required by
 [START_HERE](../START_HERE.md) ("Vehicle state: timestamp, position,
 velocity, orientation, coordinate frame, flight mode, validity").
+
+**Compatibility: no downstream rename needed.** `VehicleFeedback` stays as a
+permanent alias of `DroneState` (the same class object, not a subclass), so
+`from motion_engine.contracts import VehicleFeedback`, keyword construction
+without the new fields, and `isinstance(x, VehicleFeedback)` all keep
+working. Docking (`docking/run_docking.py`,
+`docking/states/docking_controller.py`) uses all three and passes unchanged.
+Teams can switch to the `DroneState` name whenever they next touch that code.
 
 1. **Purpose.** Motion's single, per-tick report of the vehicle's
    *estimated* state (where it is, how it is moving, what mode it is in) plus
@@ -305,9 +320,10 @@ Motion records land in the same `universal_log/logged_states_<run>.log`.
 `contracts.MemoryLogSink` remains the in-memory sink for tests. Motion no
 longer imports the old `mission.logging_format`.
 
-**Integrated runs (pending).** `state_machine/run_loop.py` still builds
-`MotionStub` without a logger, so Motion's records are dropped in integrated
-runs. The State Machine team has been asked to add an optional
+**Integrated runs (follow-up, not a dependency).** `state_machine/run_loop.py`
+still builds `MotionStub` without a logger, so Motion's records are dropped in
+integrated runs, the same as before this change. The State Machine team has
+been asked to add an optional
 `run_world(..., motion_logger=None)` that passes the logger to `MotionStub`
 and calls `set_log_context(state=...)` each tick. Motion needs no change for
 that: `MotionStub(logger=...)` and `set_log_context()` already exist.

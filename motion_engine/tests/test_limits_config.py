@@ -64,10 +64,11 @@ def test_comm_loss_timeout_follows_config_when_defined():
     assert lim.comm_loss_land_timeout_ns == 7 * 1_000_000_000
 
 
-@pytest.mark.xfail(strict=True, reason="pending Safety team: add COMM_LOSS_LAND_TIMEOUT_NS to "
-                   "safety_layer/config.py (see the Safety request doc); remove this marker then")
-def test_safety_config_defines_the_comm_loss_timeout():
-    assert config.COMM_LOSS_LAND_TIMEOUT_NS == MotionLimits().comm_loss_land_timeout_ns
+def test_comm_loss_timeout_from_the_real_config():
+    """Passes before and after Safety adds the constant: from_config() uses
+    Safety's value when there is one, Motion's default otherwise."""
+    expected = getattr(config, "COMM_LOSS_LAND_TIMEOUT_NS", MotionLimits().comm_loss_land_timeout_ns)
+    assert MotionLimits.from_config().comm_loss_land_timeout_ns == expected
 
 
 def test_from_config_follows_a_changed_config(monkeypatch):
