@@ -50,6 +50,14 @@ KIND_TO_ACTION = {
     MotionCommandType.EMERGENCY_LAND: "hold",
 }
 
+# "Fly this way at this speed" is in-flight movement like MOVE_TO and
+# TRACK_TARGET, so it answers to the same tracking rule.
+# TODO: once Motion PR #93 is merged, move this into the table above and drop
+#       the hasattr checks here and in _safety_command. They only exist so
+#       this file works whichever PR merges first.
+if hasattr(MotionCommandType, "SET_VELOCITY"):
+    KIND_TO_ACTION[MotionCommandType.SET_VELOCITY] = "tracking"
+
 # Safety's own reason codes, for problems Motion's list doesn't name.
 GEOFENCE_BREACH = "geofence_breach"
 ALTITUDE_CEILING = "altitude_ceiling"
@@ -80,11 +88,16 @@ def _safety_command(
     """Build a replacement order from Safety.
 
     HOVER, DISARM and EMERGENCY_LAND all act where the drone currently is, so we
-    deliberately drop the original target instead of reusing it: the old
-    destination is exactly what we're trying to stop.
+    deliberately drop the original target (and any velocity setpoint) instead
+    of reusing it: the old destination is exactly what we're trying to stop.
+    Motion rejects a HOVER that still carries a velocity, so leaving it in
+    would make Safety's own safe order fail.
     """
+    # Orders only have a velocity field once Motion PR #93 is merged.
+    no_velocity = {"velocity": None} if hasattr(original, "velocity") else {}
     return replace(
         original,
+        **no_velocity,
         command_id=f"{original.command_id}-safety",
         kind=kind,
         target=None,

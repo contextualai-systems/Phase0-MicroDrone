@@ -316,3 +316,63 @@ class TestEmergencyPassThrough(unittest.TestCase):
         decision = check_command(disarm_order(), self.dying(), NOW)
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.command.kind, MotionCommandType.EMERGENCY_LAND)
+
+
+@unittest.skipUnless(
+    hasattr(MotionCommandType, "SET_VELOCITY"), "needs Motion PR #93 (SET_VELOCITY)"
+)
+class TestSetVelocity(unittest.TestCase):
+    """Motion's "fly this way at this speed" order (needs Motion PR #93)."""
+
+    def velocity_order(self, **changes):
+        from motion_engine.contracts import Velocity
+
+        return good_order(
+            command_id="vel-1",
+            kind=MotionCommandType.SET_VELOCITY,
+            target=None,
+            velocity=Velocity(vx=1.0, vy=0.0, vz=0.0),
+            **changes,
+        )
+
+    def test_allowed_when_tracking_is_allowed(self):
+        order = self.velocity_order()
+        decision = check_command(order, all_clear(), NOW)
+        self.assertTrue(decision.allowed, decision.reasons)
+        self.assertIs(decision.command, order)
+
+    def test_blocked_whenever_tracking_is_blocked(self):
+        low_battery = assess(snapshot(battery={"percent": 15.0}), NOW)
+        self.assertFalse(low_battery.allows("tracking"))
+        decision = check_command(self.velocity_order(), low_battery, NOW)
+        self.assertFalse(decision.allowed)
+        self.assertIn(ACTION_NOT_PERMITTED, decision.reasons)
+
+    def test_safety_hover_forgets_the_old_speed(self):
+        """Otherwise Motion rejects Safety's own hover as broken."""
+        low_battery = assess(snapshot(battery={"percent": 15.0}), NOW)
+        decision = check_command(self.velocity_order(), low_battery, NOW)
+        self.assertEqual(decision.command.kind, MotionCommandType.HOVER)
+        self.assertIsNone(decision.command.velocity)
+        self.assertIsNone(decision.command.validate())
+
+    def test_emergency_landing_forgets_the_old_speed(self):
+        dying = assess(snapshot(battery={"percent": 4.0}), NOW)
+        decision = check_command(self.velocity_order(), dying, NOW)
+        self.assertEqual(decision.command.kind, MotionCommandType.EMERGENCY_LAND)
+        self.assertIsNone(decision.command.velocity)
+        self.assertIsNone(decision.command.validate())
+
+
+class TestCommLossTimeout(unittest.TestCase):
+    def test_comm_loss_landing_finishes_inside_the_return_deadline(self):
+        worst_descent_ns = (
+            config.ALTITUDE_CEILING_M / config.MAX_VERTICAL_SPEED_MPS * config.NS_PER_S
+        )
+        self.assertLess(
+            config.COMM_LOSS_LAND_TIMEOUT_NS + worst_descent_ns, config.RETURN_DEADLINE_NS
+        )
+
+    def test_one_dropped_renewal_does_not_trigger_it(self):
+        validity_ns = config.COMM_LOSS_LAND_TIMEOUT_NS / (config.COMMAND_VALIDITY_S * config.NS_PER_S)
+        self.assertGreaterEqual(validity_ns, 10)
