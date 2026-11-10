@@ -45,3 +45,11 @@ HOVER_RETURN_TIMEOUT_NS = 10 * NS_PER_S
 # The whole trip home, including waits and retries, must finish in 60 s.
 # After that, Safety calls an emergency landing (Sections 5 and 6).
 RETURN_DEADLINE_NS = 60 * NS_PER_S
+
+# Motion's own lost-signal safety net: if no fresh order arrives for this long
+# after the last one expired (Motion holding in place), Motion lands in place.
+# 10 s = 50x the 0.2 s order validity, so one dropped renewal won't trigger it.
+# Worst case to the ground from the 30 m ceiling at 2 m/s is 25 s, so the
+# whole thing finishes well inside the 60 s return deadline.
+# Motion reads this through MotionLimits.from_config(); change it here only.
+COMM_LOSS_LAND_TIMEOUT_NS = 10 * NS_PER_S
