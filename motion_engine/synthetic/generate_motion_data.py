@@ -6,9 +6,10 @@ go left for 3 s, spin right for 4 s" -- played through a very simple model:
 * The drone moves at a constant speed while a direction is held
   (1 m/s sideways/forward, 0.5 m/s up/down, 45 deg/s yaw) and stops dead
   when the move ends. No drag, no wind, no overshoot -- easy to read.
-* The motor columns come straight from the real stub mixer,
-  `commands.motor_commands.direction_to_motor_command`, so the data matches
-  what the Motion Engine itself would output for each direction.
+* Positions are `motion_engine.contracts.Pose` values, the same type the
+  shared contract and `MotionStub` use. There are no motor/throttle columns:
+  Phase 0 never commands motors (PX4 does stabilisation), so the only
+  command shape in the Motion Engine is `contracts.Command`.
 
 Frame (same as motion_stubs.py): x = east, y = north, z = up (metres),
 yaw in degrees, 0 = facing east, counter-clockwise positive.
@@ -41,13 +42,35 @@ import math
 import random
 import sys
 from pathlib import Path
+from enum import Enum
 from typing import Callable, Dict, List, Optional, Tuple
 
 _MOTION_ENGINE_ROOT = Path(__file__).resolve().parents[1]
-if str(_MOTION_ENGINE_ROOT) not in sys.path:
-    sys.path.insert(0, str(_MOTION_ENGINE_ROOT))
+_REPO_ROOT = _MOTION_ENGINE_ROOT.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-from commands.motor_commands import Direction, direction_to_motor_command  # noqa: E402
+from motion_engine.contracts import Pose  # noqa: E402
+
+
+class Direction(Enum):
+    """The scenario vocabulary: what the drone does for one move.
+
+    A description of a scripted move, not a command type -- the commands
+    Motion accepts are `contracts.Command`. FORWARD/BACKWARD/LEFT/RIGHT are
+    relative to the heading; YAW_* turn in place.
+    """
+
+    HOVER = "hover"
+    FORWARD = "forward"
+    BACKWARD = "backward"
+    LEFT = "left"
+    RIGHT = "right"
+    UP = "up"
+    DOWN = "down"
+    YAW_LEFT = "yaw_left"
+    YAW_RIGHT = "yaw_right"
+
 
 D = Direction
 
@@ -109,9 +132,8 @@ SCENARIOS: Dict[str, List[Tuple[Direction, float]]] = {
 }
 
 #: Constant wind (east, north) in m/s applied to scenarios listed here.
-#: It moves the drone but not the motor columns (the mixer does not know
-#: about the wind), and it is included in vx_mps / vy_mps, which are the
-#: drone's *actual* velocity.
+#: It moves the drone even though the commanded direction is unchanged, and
+#: it is included in vx_mps / vy_mps, which are the drone's *actual* velocity.
 DRIFT_MPS: Dict[str, Tuple[float, float]] = {
     "drift": (0.3, 0.15),
 }
@@ -154,7 +176,6 @@ COLUMNS = [
     "t_s", "timestamp_ns", "step", "direction",
     "x_m", "y_m", "z_m", "yaw_deg",
     "vx_mps", "vy_mps", "vz_mps", "yaw_rate_dps",
-    "motor_fl", "motor_fr", "motor_rl", "motor_rr",
 ]
 
 
@@ -194,35 +215,36 @@ def generate(moves: List[Tuple[Direction, float]], rate_hz: float = 10.0,
     rng = random.Random(seed)
     dt = 1.0 / rate_hz
     dt_ns = int(round(1e9 / rate_hz))
-    x = y = z = yaw = 0.0
+    # Ground-truth pose in the contract's ENU frame. Yaw is kept unwrapped
+    # here (wrapped only when written) so long spins stay exact.
+    pose = Pose(0.0, 0.0, 0.0, 0.0)
     tick = 0
     rows: List[dict] = []
 
     def emit(step: int, direction: Direction, v: Tuple[float, float, float, float]) -> None:
-        motors = direction_to_motor_command(direction)
         n = (lambda: rng.gauss(0.0, noise_m)) if noise_m > 0 else (lambda: 0.0)
         rows.append({
             "t_s": round(tick * dt, 3), "timestamp_ns": tick * dt_ns,
             "step": step, "direction": direction.value,
-            "x_m": round(x + n(), 4) + 0.0, "y_m": round(y + n(), 4) + 0.0,
-            "z_m": round(max(0.0, z + n()), 4), "yaw_deg": round(yaw % 360.0, 2),
+            "x_m": round(pose.x + n(), 4) + 0.0, "y_m": round(pose.y + n(), 4) + 0.0,
+            "z_m": round(max(0.0, pose.z + n()), 4), "yaw_deg": round(pose.yaw_deg % 360.0, 2),
             "vx_mps": round(v[0], 4) + 0.0, "vy_mps": round(v[1], 4) + 0.0,
             "vz_mps": round(v[2], 4), "yaw_rate_dps": round(v[3], 2),
-            "motor_fl": motors.front_left, "motor_fr": motors.front_right,
-            "motor_rl": motors.rear_left, "motor_rr": motors.rear_right,
         })
 
     for step, (direction, seconds) in enumerate(moves):
         ticks = int(round(seconds * rate_hz))
         for _ in range(ticks):
-            v = _velocity(direction, yaw)
-            if z > 0.0:   # wind only moves the drone once it is off the ground
+            v = _velocity(direction, pose.yaw_deg)
+            if pose.z > 0.0:   # wind only moves the drone once it is off the ground
                 v = (v[0] + drift_mps[0], v[1] + drift_mps[1], v[2], v[3])
             emit(step, direction, v)
-            x += v[0] * dt
-            y += v[1] * dt
-            z = max(0.0, z + v[2] * dt)   # can't go through the ground
-            yaw += v[3] * dt
+            pose = Pose(
+                pose.x + v[0] * dt,
+                pose.y + v[1] * dt,
+                max(0.0, pose.z + v[2] * dt),   # can't go through the ground
+                pose.yaw_deg + v[3] * dt,
+            )
             tick += 1
     # Final resting sample so the last position is in the file.
     emit(len(moves), D.HOVER, (0.0, 0.0, 0.0, 0.0))
