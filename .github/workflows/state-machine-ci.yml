@@ -12,6 +12,7 @@ on:
       - 'motion_engine/**'
       - 'safety_layer/**'
       - 'universal_log/**'
+      - 'cv/**'
   push:
     branches: [main]
     paths:
@@ -24,6 +25,7 @@ on:
       - 'motion_engine/**'
       - 'safety_layer/**'
       - 'universal_log/**'
+      - 'cv/**'
   workflow_dispatch:
 
 permissions:
@@ -58,7 +60,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install test dependencies
-        run: python -m pip install -r requirements-ci.txt
+        run: python -m pip install -r requirements-ci.txt -r cv/requirements.txt
 
       - name: State-machine suite
         if: ${{ !cancelled() }}
