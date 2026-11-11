@@ -6,7 +6,7 @@ Run this from the main project folder:
 
 import unittest
 
-from motion_engine.contracts import Command, MotionCommandType, Pose, Reason
+from motion_engine.contracts import Command, MotionCommandType, Pose, Reason, Velocity
 
 from safety_layer import config
 from safety_layer.command_check import (
@@ -16,6 +16,7 @@ from safety_layer.command_check import (
     GEOFENCE_BREACH,
     SPEED_LIMIT,
     UNDERGROUND_TARGET,
+    _velocity_ok,
     check_command,
 )
 from safety_layer.safety_policy import assess
@@ -318,15 +319,10 @@ class TestEmergencyPassThrough(unittest.TestCase):
         self.assertEqual(decision.command.kind, MotionCommandType.EMERGENCY_LAND)
 
 
-@unittest.skipUnless(
-    hasattr(MotionCommandType, "SET_VELOCITY"), "needs Motion PR #93 (SET_VELOCITY)"
-)
 class TestSetVelocity(unittest.TestCase):
-    """Motion's "fly this way at this speed" order (needs Motion PR #93)."""
+    """Motion's "fly this way at this speed" order."""
 
     def velocity_order(self, **changes):
-        from motion_engine.contracts import Velocity
-
         return good_order(
             command_id="vel-1",
             kind=MotionCommandType.SET_VELOCITY,
@@ -376,3 +372,78 @@ class TestCommLossTimeout(unittest.TestCase):
     def test_one_dropped_renewal_does_not_trigger_it(self):
         validity_ns = config.COMM_LOSS_LAND_TIMEOUT_NS / (config.COMMAND_VALIDITY_S * config.NS_PER_S)
         self.assertGreaterEqual(validity_ns, 10)
+
+
+class TestVelocitySpeedLimits(unittest.TestCase):
+    """Safety checks the speed itself, the same way Motion does."""
+
+    def order(self, vx=1.0, vy=0.0, vz=0.0, yaw_rate=None, **changes):
+        fields = dict(
+            command_id="vel-1",
+            kind=MotionCommandType.SET_VELOCITY,
+            target=None,
+            velocity=Velocity(vx, vy, vz, yaw_rate),
+        )
+        fields.update(changes)
+        return good_order(**fields)
+
+    def assert_too_fast(self, order):
+        decision = check_command(order, all_clear(), NOW)
+        self.assertFalse(decision.allowed)
+        self.assertIn(Reason.VELOCITY_OUTSIDE_LIMITS, decision.reasons)
+        self.assertEqual(decision.command.kind, MotionCommandType.HOVER)
+        self.assertIsNone(decision.command.velocity)
+
+    def assert_ok(self, order):
+        decision = check_command(order, all_clear(), NOW)
+        self.assertTrue(decision.allowed, decision.reasons)
+
+    def test_exactly_at_the_limits_is_fine(self):
+        self.assert_ok(self.order(vx=3.0, vy=4.0, vz=-config.MAX_VERTICAL_SPEED_MPS,
+                                  yaw_rate=-config.MAX_YAW_RATE_DPS))
+
+    def test_too_fast_sideways(self):
+        # 4 east + 4 north is 5.66 m/s: each part is fine, the total isn't.
+        self.assert_too_fast(self.order(vx=4.0, vy=4.0))
+
+    def test_too_fast_up_or_down(self):
+        self.assert_too_fast(self.order(vz=config.MAX_VERTICAL_SPEED_MPS + 0.1))
+        self.assert_too_fast(self.order(vz=-config.MAX_VERTICAL_SPEED_MPS - 0.1))
+
+    def test_spinning_too_fast(self):
+        self.assert_too_fast(self.order(yaw_rate=config.MAX_YAW_RATE_DPS + 1))
+        self.assert_too_fast(self.order(yaw_rate=-config.MAX_YAW_RATE_DPS - 1))
+
+    def test_the_orders_own_lower_cap_counts(self):
+        self.assert_too_fast(self.order(vx=2.0, max_horizontal_speed_mps=1.5))
+        self.assert_too_fast(self.order(vz=1.0, max_vertical_speed_mps=0.5))
+        self.assert_ok(self.order(vx=1.5, max_horizontal_speed_mps=1.5))
+
+    def test_safety_and_motion_agree_on_every_case(self):
+        """Whatever Safety lets through, Motion accepts; whatever Safety
+        catches for speed, Motion would have refused for the same reason."""
+        from motion_engine.motion_stubs import MotionLimits, MotionStub
+        from motion_engine.contracts import SimulationClock
+
+        cases = [
+            dict(vx=5.0), dict(vx=5.01), dict(vx=3.0, vy=4.0), dict(vx=4.0, vy=4.0),
+            dict(vz=2.0), dict(vz=-2.01), dict(yaw_rate=90.0), dict(yaw_rate=-90.5),
+            dict(vx=2.0, max_horizontal_speed_mps=1.5),
+        ]
+        for i, case in enumerate(cases):
+            with self.subTest(**case):
+                clock = SimulationClock()
+                motion = MotionStub(clock=clock, limits=MotionLimits.from_config())
+                motion.arm()
+                motion.takeoff(10.0)
+                for _ in range(100):  # 10 s: plenty to finish the climb
+                    clock.advance(0.1)
+                    motion.step(0.1)
+                now = clock.timestamp_ns
+                order = self.order(command_id=f"vel-{i}", issued_ns=now,
+                                   expires_ns=now + int(0.2 * config.NS_PER_S), **case)
+                safety_ok = _velocity_ok(order)
+                ack = motion.submit(order, now)
+                self.assertEqual(safety_ok, ack.accepted, ack.reason)
+                if not safety_ok:
+                    self.assertEqual(ack.reason, Reason.VELOCITY_OUTSIDE_LIMITS)
