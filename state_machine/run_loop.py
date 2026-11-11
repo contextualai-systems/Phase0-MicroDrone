@@ -215,6 +215,7 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
     return_started = None    # the return latch: when the mission first committed to returning home
     return_reason = None      # why the return started, or None if no return has started
     launching = False         # True from the launch (IDLE -> HOVERING) until the mission leaves HOVERING
+    launch_started = None     # when the current launch began, for Safety's 10 s launch timeout
     state_entered = 0         # when the current state was entered; the mission starts in IDLE at time 0
     active = {"number": 0, "kind": None, "target": None}  # the last command sent to Motion
     vehicle = motion.feedback(clock.timestamp_ns)          # Motion's feedback from the previous tick
@@ -262,6 +263,7 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
             "return_started_ns": return_started,  # for Safety's 60 s return deadline
             "launch_phase": current_launch_phase(launching, vehicle),  # so step() waits for the climb
             "pending_command_failure": command_failure,  # Safety aborts after a rejected command (contract section 6)
+            "launch_started_ns": launch_started,  # for Safety's 10 s launch timeout
         }
 
 
@@ -340,11 +342,13 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
         if currState == State.IDLE and newState == State.HOVERING:
             launches += 1
             launching = True
+            launch_started = now_ns
             for ack in launch_drone(motion, clock, newState, reason, launches, assessment):
                 commands.append((current_time_ms, ack.kind, ack.accepted, ack.reason))
             vehicle = motion.feedback(clock.timestamp_ns)  # so the takeoff shows as the active command
         elif newState != State.HOVERING:
             launching = False  # leaving HOVERING ends the launch, even if the climb hadn't finished
+            launch_started = None  # and cancels its timeout, so it can't abort a later return
 
         # Send (or renew) the command this state wants, before Motion moves this tick
         ack = send_command(motion, clock, active, newState, reason, wanted_command(newState, vehicle, dockUpdate.proposed_target), assessment)

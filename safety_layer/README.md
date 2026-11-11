@@ -53,7 +53,13 @@ First level that applies wins:
    lost signal, bad weather, or a trip home that has run 60 s or more
    (`context.return_started_ns`, kept through retries) → land in place,
    replace any order.
-2. **Abort** — operator stop or rejected command → cancel target; hold still allowed.
+2. **Abort** — operator stop, rejected command, or a takeoff climb still
+   going 10 s after launch (`launch_timeout`) → cancel target; hold still
+   allowed. The launch timer (`context.launch_started_ns`) only counts while
+   `context.launch_phase` is `climbing`, so it can never abort a later trip
+   home. Docking's own timeouts (30 s per attempt, 5 s search) abort through
+   Docking's `abort` phase instead, and the 60 s return deadline caps the
+   whole trip home.
 3. **Restrictions** — block only what the hazard affects:
 
    | Hazard | Blocks |
@@ -215,10 +221,11 @@ state machine's hover goes through.
 
 ## Not done yet
 
-- Launch and docking timeouts need coordinator-tracked time. (The 60 s return
-  deadline is done.)
 - Logging not wired up: `SafetyEvent` is ready, but `run_loop.py` doesn't
   build one yet.
+- A drone whose climb keeps timing out will land, recharge and try again,
+  over and over. A limit on repeated failed launches (or requiring a reset
+  first) would need the state machine team.
 - Weather words are a guess (`clear` and `cloudy` are safe). The demos only
   send `clear` and `storm`; needs the simulation team to confirm the full list.
 - The `vehicle` section now matches Motion's `DroneState` contract
