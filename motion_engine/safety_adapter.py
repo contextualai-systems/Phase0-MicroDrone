@@ -2,8 +2,8 @@
 
 Since PR #65, Safety (`safety_layer/command_check.py`) reads Motion's own
 contract `Command` and hands back a Motion `Command`: the original if it is
-allowed, otherwise a replacement Motion can execute (HOVER, LAND or
-EMERGENCY_LAND, ID `<original id>-safety`, `source = "safety"`). The kind,
+allowed, otherwise a replacement Motion can execute (HOVER, LAND,
+EMERGENCY_LAND, or DISARM on the ground, ID `<original id>-safety`, `source = "safety"`). The kind,
 target and expiry translation this module used to do is no longer needed.
 
 What is left is one call for the coordinator's dispatch step:
@@ -12,21 +12,33 @@ What is left is one call for the coordinator's dispatch step:
     ack = motion.submit(to_submit, now_ns)
     # log decision.reasons next to the ack
 
-and a guard that refuses to hand Motion anything that is not a Motion
-`Command` (for example, if Safety's return type changes again). The tests in
+a guard that refuses to hand Motion anything that is not a Motion
+`Command` (for example, if Safety's return type changes again), and one
+clean-up of Safety's replacements (below). The tests in
 `tests/test_safety_adapter.py` drive the real Safety check and the real
 MotionStub together, so a contract drift between the two teams shows up
 there first.
+
+Velocity setpoints on Safety's replacements
+-------------------------------------------
+Motion rejects any non-velocity kind that carries a velocity
+(`invalid_command`). Safety clears the velocity when it builds a HOVER, LAND,
+EMERGENCY_LAND or DISARM replacement of a `SET_VELOCITY` command;
+`check_for_motion()` clears it too, as a second line of defence, so Safety's
+stop is always accepted. It never changes what Safety decided: the kind, the
+reasons and `allowed` are untouched, and an allowed command passes through as
+the same object.
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Tuple
 
 try:
-    from motion_engine.contracts import Command
+    from motion_engine.contracts import Command, MotionCommandType
 except ModuleNotFoundError:  # pragma: no cover -- only motion_engine/ on sys.path
-    from contracts import Command  # type: ignore[no-redef]
+    from contracts import Command, MotionCommandType  # type: ignore[no-redef]
 
 from safety_layer.command_check import CommandDecision, check_command
 from safety_layer.safety_policy import SafetyAssessment
@@ -40,8 +52,10 @@ def check_for_motion(
     """Run Safety's command check; return `(command_to_submit, decision)`.
 
     `command_to_submit` is `cmd` itself when Safety allows it, else Safety's
-    replacement. Raises `TypeError` if Safety returns something Motion
-    cannot accept, rather than letting Motion reject it silently mid-flight.
+    replacement, with any velocity setpoint it copied from the original
+    cleared (see the module docstring). Raises `TypeError` if Safety returns
+    something Motion cannot accept, rather than letting Motion reject it
+    silently mid-flight.
     """
     decision = check_command(cmd, assessment, now_ns)
     if not isinstance(decision.command, Command):
@@ -49,4 +63,13 @@ def check_for_motion(
             "Safety returned a non-Motion command "
             f"({type(decision.command).__name__}); update motion_engine/safety_adapter.py"
         )
-    return decision.command, decision
+    return _without_copied_velocity(decision.command, cmd), decision
+
+
+def _without_copied_velocity(out: Command, original: Command) -> Command:
+    """Clear a velocity Safety copied onto a non-velocity replacement."""
+    if out is original or out.velocity is None:
+        return out
+    if out.kind == MotionCommandType.SET_VELOCITY:
+        return out
+    return replace(out, velocity=None)

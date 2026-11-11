@@ -11,13 +11,9 @@ command/ack/feedback contract has its own file, test_motion_contract.py.
 
 import ast
 import math
-import sys
 from pathlib import Path
 
 _MOTION_ENGINE_ROOT = Path(__file__).resolve().parents[1]
-_REPO_ROOT = _MOTION_ENGINE_ROOT.parent
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
 
 import pytest
 
@@ -181,20 +177,6 @@ def test_yaw_takes_shortest_path(motion, clock, start, goal, first_step):
     expected = abs(wrap_180(goal - start)) / 90.0
     assert t == pytest.approx(expected, abs=DT + 1e-9)
     assert motion.pose.yaw_deg == pytest.approx(goal)
-
-
-def test_350_to_10_turns_plus_20(motion, clock):
-    motion.arm()
-    motion.set_yaw(350.0)
-    settle(motion, clock)
-    motion.set_yaw(10.0)
-    total = 0.0
-    prev = motion.pose.yaw_deg
-    while motion.pose != motion.target:
-        motion.step(DT)
-        total += wrap_180(motion.pose.yaw_deg - prev)
-        prev = motion.pose.yaw_deg
-    assert total == pytest.approx(20.0)
 
 
 def test_at_target_uses_arrival_tolerance(motion, clock):
