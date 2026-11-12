@@ -1,13 +1,16 @@
 import json
+from pathlib import Path
 
 import pytest
 
 from motion_engine.contracts import CommandAck, MotionCommandType
 from safety_layer.safety_policy import assess
 from state_machine import run_loop
-from state_machine.demos import BIRD_GONE, BIRD_SEEN, DEMOS
-from state_machine.run_loop import run_world
+from cv.synthetic_frames import validate_scenario
+from state_machine.demos import BIRD_DEMO_INIT, BIRD_GONE, BIRD_SEEN, DEMOS
+from state_machine.run_loop import build_temp_fixture, run_world
 from state_machine.state_machine import step, State
+from motion_engine.contracts import MemoryLogSink
 
 AIRBORNE_STATES = [State.TRACKING, State.HOVERING, State.DOCKING_INIT, State.DOCKING_APPROACH, State.ABORT]
 
@@ -443,7 +446,7 @@ def test_each_tick_has_a_mission_status(name):
 def test_launch_phase_reaches_complete():
     # The bird leaves right after the launch, so the mission stays in HOVERING for the whole climb:
     # launch_phase goes none -> climbing -> complete, then back to none once the mission leaves HOVERING.
-    scenario = [(1000, {"bird": BIRD_SEEN}), (1100, {"bird": BIRD_GONE})]
+    scenario = [(0, {"bird": BIRD_GONE}), (1000, {"bird": BIRD_SEEN}), (1100, {"bird": BIRD_GONE})]
     statuses = run_world(4500, scenario=scenario)["statuses"]
 
     phases = []  # (state, launch_phase) each time either one changes
@@ -457,3 +460,149 @@ def test_launch_phase_reaches_complete():
         (State.DOCKING_INIT, "none"),
         (State.DOCKING_APPROACH, "none"),
     ]
+
+
+# CV's 15 Hz fixture: no bird for 1 s, bird 1-5 s, none 5-6 s, bird 6-8 s, none 8-12 s,
+# then missing frames until it ends at 13 s
+INTEGRATION_CYCLE = str(Path(__file__).resolve().parents[2] / "cv" / "scenarios" / "integration_cycle.json")
+FRAME_NS = 1_000_000_000 / 15  # time between two of its frames
+
+
+def birds_seen_by_step(monkeypatch, duration_ms, **run_args):
+    """Run the loop and record (tick time, snapshot["bird"]) on every tick, as step() receives them."""
+    birds = []
+    real_step = run_loop.step
+
+    def recording_step(state, snapshot):
+        birds.append((snapshot["timestamp_ns"], snapshot["bird"]))
+        return real_step(state, snapshot)
+
+    monkeypatch.setattr(run_loop, "step", recording_step)
+    run_world(duration_ms, **run_args)
+    return birds
+
+
+# CV's 1 Hz fixture: a bird in 3 samples (0 s, 1 s, 2 s). At 10 Hz the cached sample
+# goes past Safety's 0.5 s limit before the next one arrives.
+STALE_SAMPLES = str(Path(__file__).resolve().parents[2] / "cv" / "scenarios" / "stale_samples.json")
+MAX_AGE_NS = 500_000_000  # Safety's MAX_OBSERVATION_AGE_S
+
+
+def snapshots_seen_by_step(monkeypatch, duration_ms, **run_args):
+    """Run the loop and record every tick's snapshot as step() receives it, after Safety has assessed it."""
+    snapshots = []
+    real_step = run_loop.step
+
+    def recording_step(state, snapshot):
+        snapshots.append(snapshot)
+        return real_step(state, snapshot)
+
+    monkeypatch.setattr(run_loop, "step", recording_step)
+    run_world(duration_ms, **run_args)
+    return snapshots
+
+
+def test_cv_bird_keeps_its_own_sample_time(monkeypatch):
+    # At 15 Hz the samples fall between the 10 Hz ticks. The bird must keep its sample's time,
+    # not be restamped with the tick's time.
+    birds = birds_seen_by_step(monkeypatch, 15000, scenario=[], camera_fixture=INTEGRATION_CYCLE)
+    bird_at = dict(birds)  # tick time -> bird
+
+    assert bird_at[100_000_000]["timestamp_ns"] == 66_666_667  # frame 1, not the tick's 100 ms
+    assert bird_at[200_000_000]["frame_index"] == 3  # frames 2 and 3 were both due; the latest one wins
+    for now_ns, bird in birds:
+        # always the latest sample that is due: no later than the tick, and less than one frame before it
+        assert now_ns - FRAME_NS < bird["timestamp_ns"] <= now_ns
+
+    first_seen = next(now_ns for now_ns, bird in birds if bird["detected"] is True)
+    assert first_seen == 1_000_000_000  # frame 15
+
+    # Missing frames are missing input, not "no bird"
+    missing = [bird for now_ns, bird in birds if now_ns >= 12_000_000_000]
+    assert len(missing) == 10
+    for bird in missing:
+        assert bird["detected"] is None and bird["valid"] is False and bird["reason"] == "missing_frame"
+
+
+def test_run_ends_when_the_cv_fixture_runs_out():
+    # The fixture ends at 13 s, so a 15 s run stops after the tick at 12.9 s.
+    # That is the planned end of the scenario, so the last tick that ran still gets the outcome.
+    statuses = run_world(15000, scenario=[], camera_fixture=INTEGRATION_CYCLE)["statuses"]
+
+    assert len(statuses) == 130
+    assert statuses[-1].timestamp_ns == 12_900_000_000
+    assert statuses[-1].state == State.DOCKING_APPROACH
+    assert statuses[-1].outcome == "interrupted"  # still airborne when the scenario ended
+    for status in statuses[:-1]:
+        assert status.outcome is None
+
+
+def test_motion_logger_gets_motion_records():
+    # run_world passes motion_logger to MotionStub, so Motion's records reach it.
+    # MemoryLogSink keeps them in memory, so the test writes no log files.
+    sink = MemoryLogSink()
+    scenario, duration_ms = DEMOS["full_cycle"]
+    run_world(duration_ms, scenario=scenario, motion_logger=sink)
+
+    assert sink.records  # the logger reached Motion
+    assert all(record.module == "MOTION" for record in sink.records)
+    assert sink.records[0].event == "arm"  # the launch is the first thing Motion is asked to do
+
+
+def test_safety_blocks_launch_and_tracking_on_missing_frames(monkeypatch):
+    # integration_cycle.json's last second (12-13 s) is missing frames. Safety reads the camera
+    # from environment.camera_ok, so the loop has to turn missing CV input into a camera failure.
+    snapshots = snapshots_seen_by_step(monkeypatch, 15000, scenario=[], camera_fixture=INTEGRATION_CYCLE)
+    missing = [snapshot for snapshot in snapshots if snapshot["bird"]["valid"] is False]
+
+    assert len(missing) == 10  # the ticks at 12.0-12.9 s
+    for snapshot in missing:
+        safety = snapshot["safety"]
+        assert safety["permissions"]["launch"] is False
+        assert safety["permissions"]["tracking"] is False
+        assert "camera_failure" in safety["reasons"]
+
+
+def test_safety_blocks_launch_and_tracking_on_stale_samples(monkeypatch):
+    # stale_samples.json is 1 Hz. Once the cached sample is older than Safety's 0.5 s limit,
+    # the camera counts as failed; while it's fresh, it doesn't.
+    snapshots = snapshots_seen_by_step(monkeypatch, 3000, scenario=[], camera_fixture=STALE_SAMPLES)
+
+    stale = [s for s in snapshots if s["timestamp_ns"] - s["bird"]["timestamp_ns"] > MAX_AGE_NS]
+    fresh = [s for s in snapshots if s["timestamp_ns"] - s["bird"]["timestamp_ns"] <= MAX_AGE_NS]
+    assert len(stale) == 12  # 0.6-0.9 s, 1.6-1.9 s and 2.6-2.9 s
+    assert len(fresh) == 18
+
+    for snapshot in stale:
+        safety = snapshot["safety"]
+        assert safety["permissions"]["launch"] is False
+        assert safety["permissions"]["tracking"] is False
+        assert "camera_failure" in safety["reasons"]
+    for snapshot in fresh:
+        assert "camera_failure" not in snapshot["safety"]["reasons"]
+
+
+def test_partial_bird_update_keeps_the_rest_of_the_bird():
+    # A scenario event only changes the fields it lists. A distance-only update after a sighting
+    # must keep detected and type, or CV rejects the fixture at startup.
+    scenario = [BIRD_DEMO_INIT, (500, {"bird": BIRD_SEEN}), (2000, {"bird": {"distance_m": 20.0}})]
+    gone_before = dict(BIRD_GONE)
+    fixture = build_temp_fixture(scenario, 3000)
+
+    validate_scenario(fixture)  # raises if any frame is incomplete
+    frames = [segment["bird"] for segment in fixture["segments"]]  # one frame per tick
+    assert frames[20] == {"detected": True, "type": "hawk", "distance_m": 20.0}  # 2.0 s: only the distance changed
+    assert frames[19] == {"detected": True, "type": "hawk", "distance_m": 30.0}  # 1.9 s: earlier frames unchanged
+    assert BIRD_GONE == gone_before  # the shared constant isn't changed either
+
+    run_world(3000, scenario=scenario)  # CV accepts it
+
+
+def test_partial_no_bird_update_clears_type_and_distance():
+    # {"detected": False} on its own must not leave the hawk's type and distance behind,
+    # because CV rejects a "no bird" frame that still has them.
+    scenario = [BIRD_DEMO_INIT, (500, {"bird": BIRD_SEEN}), (1000, {"bird": {"detected": False}})]
+    fixture = build_temp_fixture(scenario, 2000)
+
+    validate_scenario(fixture)
+    assert fixture["segments"][10]["bird"] == BIRD_GONE
