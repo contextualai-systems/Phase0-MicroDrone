@@ -23,11 +23,18 @@ not change mission behavior or deploy anything.
 
 ## Dependencies and local reproduction
 
-Docking's unittest suites need only the standard library. The pytest-based jobs
-install [requirements-ci.txt](../requirements-ci.txt); CV additionally installs
-its existing [requirements](../cv/requirements.txt). Separate jobs prevent CV
-dependencies from being required for other modules. Run commands from the
-repository root in an isolated environment:
+Docking CI installs the [CV requirements](../cv/requirements.txt) because its
+Safety policy suite exercises the integrated run loop and synthetic camera.
+The pytest-based jobs install [requirements-ci.txt](../requirements-ci.txt);
+CV, Safety, and State Machine CI also install the CV requirements.
+
+Docking's `test_safety_policy.py` includes `TestLaunchInTheRunLoop`, which imports
+`state_machine.run_loop` and therefore `cv.computer_vision`. A clean runner needs
+OpenCV and NumPy even though the docking controller tests themselves are
+standard-library-only. Keep that integration test enabled; a missing `cv2` error
+requires installing `cv/requirements.txt`, not skipping the test.
+
+Run commands from the repository root in an isolated environment:
 
 ```bash
 python -m venv .venv

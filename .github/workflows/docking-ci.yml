@@ -7,6 +7,9 @@ on:
       - 'docking/**'
       - 'motion_engine/**'
       - 'safety_layer/**'
+      - 'state_machine/**'
+      - 'cv/**'
+      - 'universal_log/**'
       - 'tests/test_docking*.py'
       - 'tests/test_command_check.py'
       - 'tests/test_safety_policy.py'
@@ -19,6 +22,9 @@ on:
       - 'docking/**'
       - 'motion_engine/**'
       - 'safety_layer/**'
+      - 'state_machine/**'
+      - 'cv/**'
+      - 'universal_log/**'
       - 'tests/test_docking*.py'
       - 'tests/test_command_check.py'
       - 'tests/test_safety_policy.py'
@@ -37,7 +43,7 @@ jobs:
   docking-tests:
     name: Docking tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -54,7 +60,10 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      # These suites use only the standard library and local synthetic modules.
+      # TestLaunchInTheRunLoop imports run_world and its OpenCV/NumPy dependencies.
+      - name: Install test dependencies
+        run: python -m pip install -r cv/requirements.txt
+
       - name: Run docking tests
         run: python -B -m unittest discover -s tests -p 'test_docking*.py' -v
 
