@@ -62,6 +62,8 @@ emergency latch are covered in every flight phase by
 |---|---|
 | Ack vs progress | `test_accepted_means_executing_not_done`: an accepted ack means in progress, not finished. `test_launch_reports_arrival_and_airborne_and_refuses_disarm`. |
 | Approach and landing | `test_approach_and_descent_land_settled_then_disarm`: "arrived" while still in the air must not read as landed. Ordinary landings do not auto-disarm. `test_flight_commands_rejected_when_not_armed`. |
+| Only TAKEOFF leaves the ground | `test_position_moves_are_rejected_on_the_ground`: armed on the pad, MOVE_TO, TRACK_TARGET and GOTO_DOCK_APPROACH are each rejected `not_airborne` and the drone does not move. `test_holding_and_turning_on_the_ground_are_still_allowed`: HOVER, STOP and SET_YAW cannot lift off, so they are still accepted. |
+| Emergency latch | `test_emergency_latch_outranks_a_reused_id`: while latched, renewing the replaced command gets `emergency_descent_active` (not `command_id_reused`), and a repeated EMERGENCY_LAND, even under a used ID, is idempotent. |
 | Replacement | `test_new_command_replaces_target_before_next_step`: a HOVER takes effect before the next step. `test_rejected_command_leaves_previous_active_and_reports_it`. |
 | Limits | `test_geofence_and_ceiling_edges_reject_not_clamp` (6 cases exactly on and just past the ceiling and fence), `test_speed_limits_in_command_only_lower`. |
 | Renewal and IDs | `test_renewal_extends_without_restart_or_extra_log`, `test_reusing_an_id_for_a_different_request_is_rejected`: a reused ID is rejected, including an old ID and a verbatim replay. |
@@ -193,12 +195,15 @@ with `motion_rig.Rig`).
   - `test_emergency_from_safety_mid_route_lands_in_place_and_never_counts_a_waypoint`:
     straight down, no arrival counted, and the route fails (`not_armed`) instead of relaunching.
   - `test_emergency_sent_mid_route_fails_the_route_and_lands_in_place`: the coordinator's own
-    EMERGENCY_LAND fails the route, and the executor stops sending.
+    EMERGENCY_LAND fails the route with `emergency_descent_active`, and the executor stops sending.
   - `test_low_battery_mid_route_holds_and_the_return_goes_through_docking`: waypoint MOVE_TOs
     need the tracking permission, so under low battery the route only holds. The way home is
     GOTO_DOCK_APPROACH / DESCEND_TO_DOCK.
   - `test_comm_loss_landing_mid_route_is_called_off_when_the_coordinator_returns`: 12 s of
     silence starts a comm-loss landing. The executor's fresh ID calls it off and the route completes.
+  - `test_route_does_not_lift_off_after_a_comm_loss_landing_in_the_field`: if the coordinator
+    only comes back after touchdown, the route's MOVE_TO is refused (`not_airborne`), so the route
+    fails and the drone stays on the ground instead of lifting off without a TAKEOFF.
 - `test_progress_serializes`.
 
 ### `test_state_machine_alignment.py`: Motion as driven by `state_machine/run_loop.py`

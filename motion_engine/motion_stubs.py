@@ -68,6 +68,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 try:
     from motion_engine.contracts import (
+        AIRBORNE_ONLY_KINDS,
         CONTRACT_KINDS,
         LANDING_KINDS,
         VELOCITY_KINDS,
@@ -86,6 +87,7 @@ try:
     )
 except ModuleNotFoundError:  # pragma: no cover -- only motion_engine/ on sys.path
     from contracts import (  # type: ignore[no-redef]
+        AIRBORNE_ONLY_KINDS,
         CONTRACT_KINDS,
         LANDING_KINDS,
         VELOCITY_KINDS,
@@ -486,22 +488,25 @@ class MotionStub:
                 return reject(Reason.COMMAND_ID_REUSED, "same id, different request")
             self._active_contract = command  # new expiry; no restart, no log
             return self._ack(command, True, Reason.RENEWED, now_ns)
-        if command.command_id in self._seen_ids:
-            return reject(Reason.COMMAND_ID_REUSED)
-
+        # The emergency latch outranks every other refusal, so a caller that
+        # renews a command the emergency replaced is told why, not just
+        # "reused ID". Repeats of EMERGENCY_LAND are idempotent.
         if self._emergency:
             if kind == MotionCommandType.EMERGENCY_LAND:
                 self._seen_ids.add(command.command_id)
                 return self._ack(command, True, Reason.ALREADY_EMERGENCY_LANDING, now_ns)
             return reject(Reason.EMERGENCY_DESCENT_ACTIVE)
+        if command.command_id in self._seen_ids:
+            return reject(Reason.COMMAND_ID_REUSED)
         if not self._armed and kind not in (MotionCommandType.ARM, MotionCommandType.DISARM):
             return reject(Reason.NOT_ARMED)
         if kind == MotionCommandType.DISARM and self.airborne:
             return reject(Reason.AIRBORNE)
 
+        if kind in AIRBORNE_ONLY_KINDS and not self.airborne:
+            what = "a velocity" if kind in VELOCITY_KINDS else "to a target"
+            return reject(Reason.NOT_AIRBORNE, f"take off before flying {what}")
         if kind in VELOCITY_KINDS:
-            if not self.airborne:
-                return reject(Reason.NOT_AIRBORNE, "take off before flying a velocity")
             problem = self._velocity_limit_problem(
                 command.velocity, command.max_horizontal_speed_mps, command.max_vertical_speed_mps
             )

@@ -287,13 +287,15 @@ def test_emergency_from_safety_mid_route_lands_in_place_and_never_counts_a_waypo
 
 def test_emergency_sent_mid_route_fails_the_route_and_lands_in_place(rig):
     """The coordinator sends EMERGENCY_LAND itself (not through Safety). The
-    route's next command is refused, so the route fails at the waypoint it
-    was flying and stops commanding, and the descent is straight down."""
+    route's next command (a renewal of the ID the emergency replaced) is
+    refused with the real reason, so the route fails at the waypoint it was
+    flying with `emergency_descent_active`, stops commanding, and the
+    descent is straight down."""
     start = _mid_route(rig)
     rig.lifecycle("em", K.EMERGENCY_LAND)
     p = rig.tick()
     assert p.status == St.FAILED and p.reason == R.COMMAND_REJECTED
-    assert p.detail.startswith("waypoint 0: ")
+    assert p.detail == "waypoint 0: emergency_descent_active"
     assert rig.ex.command("TRACKING", rig.now) is None
     n_sent = len(rig.sent)
     _ticks_until_disarmed(rig)
@@ -359,6 +361,27 @@ def test_comm_loss_landing_mid_route_is_called_off_when_the_coordinator_returns(
     assert p.status == St.COMPLETE and p.reached == 3
     assert rig.motion.pose == ROUTE[-1]
     assert all(a.accepted for a in rig.acks), [a.reason for a in rig.acks if not a.accepted]
+    rig.check()
+
+
+def test_route_does_not_lift_off_after_a_comm_loss_landing_in_the_field(rig):
+    """The coordinator stays silent until the comm-loss landing has touched
+    down away from the pad. When it comes back, the route's next MOVE_TO is
+    refused (`not_airborne`): only a checked TAKEOFF may lift the drone off,
+    so the route fails and the drone stays on the ground."""
+    _mid_route(rig)
+    for _ in range(200):
+        rig.tick(send=False)
+    fb = rig.motion.feedback(rig.now)
+    assert fb.status == CommandStatus.LANDED and fb.grounded and fb.armed
+    landed_at = rig.motion.pose
+
+    p = rig.tick()
+    assert p.status == St.FAILED and p.reason == R.COMMAND_REJECTED
+    assert p.detail == "waypoint 0: not_airborne"
+    for _ in range(10):
+        rig.tick()
+    assert rig.motion.pose == landed_at
     rig.check()
 
 
