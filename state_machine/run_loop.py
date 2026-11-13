@@ -423,10 +423,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run a scripted demo through the state machine and Motion.")
     parser.add_argument("demo", nargs="?", default="full_cycle", choices=sorted(DEMOS),
                         help="which demo to run (default: full_cycle)")
+    parser.add_argument("--no-log", action="store_true", help="don't write a log file to universal_log/")
     args = parser.parse_args()
 
+    log_transitions = not args.no_log
+    motion_logger = None if args.no_log else UniversalLogSink()
     scenario, duration_ms = DEMOS[args.demo]
-    result = run_world(duration_ms, True, True, scenario, False, motion_logger=UniversalLogSink())
+    result = run_world(duration_ms, True, log_transitions, scenario, False, motion_logger=motion_logger)
     for currentTimeMs, currState, newState, reason in result["transitions"]:
         print(f"({currentTimeMs}ms) {currState.value} -> {newState.value}: Reason: {reason}")
 
