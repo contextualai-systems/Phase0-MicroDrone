@@ -11,6 +11,7 @@ as `motion_engine.tests.motion_rig`.
 """
 
 from dataclasses import replace
+from pathlib import Path
 from typing import Callable, List, Optional
 
 from motion_engine.contracts import (
@@ -25,6 +26,10 @@ from motion_engine.contracts import (
 from motion_engine.motion_stubs import MotionLimits, MotionStub
 from motion_engine.trace_checker import TraceRecorder, TraceReport, check_trace
 from safety_layer.safety_policy import ACTIONS, SafetyAssessment
+
+#: Repo root and motion_engine/, for tests that read source or README files.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+MOTION_ENGINE_ROOT = REPO_ROOT / "motion_engine"
 
 DT = 0.1
 DT_NS = 100_000_000

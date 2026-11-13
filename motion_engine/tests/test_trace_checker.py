@@ -8,10 +8,10 @@ the synthetic-CSV loader, the demo mission and the CLI exit codes.
 
 import json
 import sys
-from pathlib import Path
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_SYNTHETIC = _REPO_ROOT / "motion_engine" / "synthetic"
+from motion_engine.tests.motion_rig import DT_NS as TICK_NS, MOTION_ENGINE_ROOT
+
+_SYNTHETIC = MOTION_ENGINE_ROOT / "synthetic"
 if str(_SYNTHETIC) not in sys.path:
     sys.path.insert(0, str(_SYNTHETIC))
 
@@ -31,8 +31,6 @@ from motion_engine.trace_checker import (
     main,
     record_demo_mission,
 )
-
-TICK_NS = 100_000_000
 
 
 def sample(tick, x=0.0, y=0.0, z=0.0, yaw=0.0, **kw):
@@ -129,6 +127,50 @@ def test_emergency_release_flags_a_vehicle_still_armed_after_touchdown():
              sample(1, z=0.0, emergency_descent=False, armed=True)]
     hits = check_trace(trace).rule_hits("emergency_release")
     assert [h.message for h in hits] == ["still armed after emergency touchdown"]
+
+
+#: One tick of emergency descent (default limits: 1 m/s, so 0.1 m per tick).
+EMERGENCY_STEPS = {
+    "too_fast": (dict(z=4.85), "descended 1.50 m/s, emergency rate is 1.0 m/s"),
+    "climbing": (dict(z=5.05), "climbed 0.050 m during emergency descent"),
+    "sideways": (dict(x=0.05, z=4.9), "moved 0.050 m sideways during emergency descent"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(EMERGENCY_STEPS))
+def test_emergency_motion_catches_each_way_of_breaking_the_descent(case):
+    """Straight down at no more than the emergency rate: anything else is
+    flagged, and only by emergency_motion (1.5 m/s is still under the normal
+    2 m/s vertical cap, so vertical_speed stays quiet)."""
+    step, message = EMERGENCY_STEPS[case]
+    trace = [sample(0, z=5.0, emergency_descent=True), sample(1, emergency_descent=True, **step)]
+    report = check_trace(trace)
+    assert report.by_rule() == {"emergency_motion": 1}, report.format_text()
+    assert report.rule_hits("emergency_motion")[0].message == message
+
+
+def test_emergency_descent_exactly_at_the_emergency_rate_is_allowed():
+    trace = [sample(i, z=5.0 - 0.1 * i, emergency_descent=True) for i in range(5)]
+    assert check_trace(trace).ok
+
+
+def test_the_tick_an_emergency_starts_is_held_to_the_emergency_rate():
+    """Motion accepts EMERGENCY_LAND before the step, so the first emergency
+    tick must already be at 1 m/s, not the normal 2 m/s descent."""
+    trace = [sample(0, z=5.0), sample(1, z=4.8, emergency_descent=True)]
+    assert check_trace(trace).by_rule() == {"emergency_motion": 1}
+    trace[1] = sample(1, z=4.9, emergency_descent=True)
+    assert check_trace(trace).ok
+
+
+def test_status_landed_without_landing_settled_is_flagged():
+    """Feedback that says 'landed' while landing_settled is False contradicts
+    itself even on the ground; Docking reads landing_settled, the state
+    machine reads status, and they must agree."""
+    trace = [sample(0, z=0.0, status="landed", landing_settled=False)]
+    hits = check_trace(trace).rule_hits("landed_off_ground")
+    assert [h.message for h in hits] == ["status 'landed' but landing_settled is False"]
+    assert check_trace([sample(0, z=0.0, status="landed", landing_settled=True)]).ok
 
 
 def test_accepted_ack_must_become_the_active_command():

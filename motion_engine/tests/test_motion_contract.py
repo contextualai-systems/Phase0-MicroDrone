@@ -92,6 +92,61 @@ def test_flight_commands_rejected_when_not_armed(rig):
     assert rig.motion.pose == PAD
 
 
+#: Commands that would move an armed drone off the pad without a TAKEOFF.
+GROUND_MOVES = {
+    K.MOVE_TO: dict(target=Pose(5.0, 0.0, 5.0, 0.0)),
+    K.TRACK_TARGET: dict(target=Pose(5.0, 0.0, 5.0, 0.0)),
+    K.GOTO_DOCK_APPROACH: dict(target=Pose(0.0, 0.0, 5.0, 0.0)),
+}
+
+
+@pytest.mark.parametrize("kind", list(GROUND_MOVES), ids=lambda k: k.value)
+def test_position_moves_are_rejected_on_the_ground(rig, kind):
+    """Only TAKEOFF leaves the ground. An armed, grounded drone must not lift
+    off on a MOVE_TO / TRACK_TARGET / GOTO_DOCK_APPROACH and skip the launch
+    checks (e.g. after a comm-loss landing in the field)."""
+    assert rig.submit(rig.cmd(K.ARM, lifecycle=True)).accepted
+    ack = rig.submit(rig.cmd(kind, **GROUND_MOVES[kind]))
+    assert not ack.accepted and ack.reason == Reason.NOT_AIRBORNE
+    assert ack.detail == "take off before flying to a target"
+    for _ in range(10):
+        rig.tick()
+    assert rig.motion.pose == PAD and rig.motion.armed
+    rig.check()
+
+
+@pytest.mark.parametrize("kind,target", [
+    (K.HOVER, None), (K.STOP, None), (K.SET_YAW, Pose(0.0, 0.0, 0.0, 90.0)),
+])
+def test_holding_and_turning_on_the_ground_are_still_allowed(rig, kind, target):
+    """These cannot lift the drone off, so they stay legal on the pad."""
+    assert rig.submit(rig.cmd(K.ARM, lifecycle=True)).accepted
+    assert rig.submit(rig.cmd(kind, target)).accepted
+    rig.tick()
+    assert rig.motion.pose.z == 0.0 and rig.motion.pose.horizontal_distance_to(PAD) == 0.0
+    rig.check()
+
+
+def test_emergency_latch_outranks_a_reused_id(airborne_rig):
+    """While the emergency latch is set, a renewal of the command it replaced
+    is told `emergency_descent_active` (not `command_id_reused`), and a
+    repeated EMERGENCY_LAND, even under an ID already used, is idempotent."""
+    rig = airborne_rig
+    move = rig.cmd(K.MOVE_TO, Pose(20.0, 0.0, 5.0, 0.0))
+    assert rig.submit(move).accepted
+    emergency = rig.cmd(K.EMERGENCY_LAND, lifecycle=True)
+    assert rig.submit(emergency).accepted
+    rig.tick()
+    assert rig.submit(rig.renewed(move)).reason == Reason.EMERGENCY_DESCENT_ACTIVE
+    other = rig.cmd(K.HOVER)
+    ack = rig.submit(other)
+    assert ack.reason == Reason.EMERGENCY_DESCENT_ACTIVE
+    repeat = rig.submit(rig.cmd(K.EMERGENCY_LAND, lifecycle=True, cid=move.command_id))
+    assert repeat.accepted and repeat.reason == Reason.ALREADY_EMERGENCY_LANDING
+    rig.tick()
+    rig.check()
+
+
 # -- cancellation / replacement before movement (README §3) -------------------------
 
 

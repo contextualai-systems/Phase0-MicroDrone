@@ -10,7 +10,6 @@ README does not, these tests fail.
 import json
 import re
 from dataclasses import fields, replace
-from pathlib import Path
 
 import pytest
 
@@ -24,8 +23,9 @@ from motion_engine.contracts import (
     Reason,
 )
 from motion_engine.motion_stubs import MotionLimits, MotionStub
+from motion_engine.tests.motion_rig import MOTION_ENGINE_ROOT
 
-README = Path(__file__).resolve().parents[1] / "README.md"
+README = MOTION_ENGINE_ROOT / "README.md"
 TAG = re.compile(r"<!-- motion-command-example: (\w+) -->\s*```json\n(.*?)```", re.S)
 
 
