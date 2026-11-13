@@ -6,15 +6,26 @@ will: Safety rules on each command, Motion executes whatever Safety approved
 or substituted. Since #65 both sides share Motion's contract `Command`.
 """
 
+import dataclasses
+
 import pytest
 
+from motion_engine import safety_adapter
 from motion_engine.contracts import CONTRACT_KINDS, Command, MotionCommandType as K, Pose, Velocity
 from motion_engine.motion_stubs import MotionStub
-from motion_engine.safety_adapter import check_for_motion
+from motion_engine.safety_adapter import _without_copied_velocity, check_for_motion
 from motion_engine.tests.motion_rig import ALL_OK, DT_NS, S, VALIDITY_NS, assessment
 from safety_layer import config
 from safety_layer.command_check import KIND_TO_ACTION, CommandDecision
 from safety_layer.safety_policy import ACTIONS
+
+#: The kinds Safety rules on with its "tracking" permission, as Motion would get them.
+TRACKING_KINDS = {
+    K.TRACK_TARGET: dict(target=Pose(20.0, 0.0, 10.0, 0.0)),
+    K.MOVE_TO: dict(target=Pose(5.0, 0.0, 10.0, 0.0)),
+    K.SET_YAW: dict(target=Pose(0.0, 0.0, 10.0, 90.0)),
+    K.SET_VELOCITY: dict(velocity=Velocity(1.0, 0.0, 0.0)),
+}
 
 
 def cmd(cid, kind, now_ns, target=None, expires=True, **kw):
@@ -48,20 +59,31 @@ def test_safety_rules_on_every_kind_motion_accepts():
     """A Motion kind Safety has no permission for would always be held."""
     assert set(KIND_TO_ACTION) == set(CONTRACT_KINDS)
     assert set(KIND_TO_ACTION.values()) <= set(ACTIONS)
-    assert KIND_TO_ACTION[K.SET_VELOCITY] == KIND_TO_ACTION[K.TRACK_TARGET] == "tracking"
+    assert {KIND_TO_ACTION[k] for k in TRACKING_KINDS} == {"tracking"}
 
 
-# -- pass-through ------------------------------------------------------------
+# -- the tracking permission ---------------------------------------------------
 
 
-def test_allowed_track_command_passes_through_and_motion_flies_it():
+@pytest.mark.parametrize("kind", list(TRACKING_KINDS), ids=lambda k: k.value)
+def test_tracking_kinds_fly_when_allowed_and_become_a_hover_when_blocked(kind):
+    """Allowed: Safety passes the command through untouched and Motion flies
+    it. Blocked: Safety swaps in a HOVER (with no copied velocity) that
+    Motion accepts."""
     m = airborne_motion()
-    c = cmd("trk-1", K.TRACK_TARGET, 0, target=Pose(20.0, 0.0, 10.0, 0.0))
+    c = cmd("x-1", kind, 0, **TRACKING_KINDS[kind])
     out, decision = check_for_motion(c, ALL_OK, 0)
     assert decision.allowed and out is c
     assert m.submit(out, 0).accepted
+    before = m.pose
     m.step(0.1, now_ns=DT_NS)
-    assert m.pose.x > 0.0
+    assert m.pose != before
+
+    blocked = assessment(blocked=("tracking",))
+    out, decision = check_for_motion(cmd("x-2", kind, DT_NS, **TRACKING_KINDS[kind]), blocked, DT_NS)
+    assert "action_not_permitted" in decision.reasons
+    assert out.kind == K.HOVER and out.velocity is None
+    assert m.submit(out, DT_NS).accepted, "Motion must accept Safety's hold replacement"
 
 
 @pytest.mark.parametrize("kind", [K.HOVER, K.STOP, K.LAND])
@@ -71,29 +93,11 @@ def test_targetless_flight_kinds_are_allowed(kind):
     assert decision.allowed
 
 
-@pytest.mark.parametrize("kind,target,velocity", [
-    (K.MOVE_TO, Pose(5.0, 0.0, 10.0, 0.0), None),
-    (K.SET_YAW, Pose(0.0, 0.0, 10.0, 90.0), None),
-])
-def test_move_to_and_set_yaw_follow_the_tracking_permission(kind, target, velocity):
-    assert KIND_TO_ACTION[kind] == KIND_TO_ACTION[K.TRACK_TARGET] == "tracking"
-    m = airborne_motion()
-    c = cmd("x-1", kind, 0, target=target, velocity=velocity)
-    out, decision = check_for_motion(c, ALL_OK, 0)
-    assert decision.allowed and out is c and m.submit(out, 0).accepted
-
-    blocked = assessment(blocked=("tracking",))
-    out, decision = check_for_motion(cmd("x-2", kind, 0, target=target, velocity=velocity), blocked, 0)
-    assert "action_not_permitted" in decision.reasons
-    assert out.kind == K.HOVER and out.velocity is None
-    assert m.submit(out, 0).accepted, "Motion must accept Safety's hold replacement"
-
-
-# -- SET_VELOCITY, with or without a Safety mapping --------------------------
+# -- SET_VELOCITY replacements, with or without a Safety mapping ---------------
 
 
 def velocity_cmd(cid, now_ns=0):
-    return cmd(cid, K.SET_VELOCITY, now_ns, velocity=Velocity(1.0, 0.0, 0.0))
+    return cmd(cid, K.SET_VELOCITY, now_ns, **TRACKING_KINDS[K.SET_VELOCITY])
 
 
 def test_unmapped_set_velocity_is_refused_and_held(monkeypatch):
@@ -108,22 +112,6 @@ def test_unmapped_set_velocity_is_refused_and_held(monkeypatch):
     x0 = m.pose.x
     m.step(0.1, now_ns=DT_NS)
     assert m.pose.x == x0, "a refused velocity command must not move the drone"
-
-
-def test_set_velocity_follows_the_tracking_permission():
-    """Safety's mapping: velocity flies when tracking is allowed and becomes
-    a HOVER Motion accepts when it is blocked."""
-    m = airborne_motion()
-    c = velocity_cmd("v-1")
-    out, decision = check_for_motion(c, ALL_OK, 0)
-    assert decision.allowed and out is c and m.submit(out, 0).accepted
-    m.step(0.1, now_ns=DT_NS)
-    assert m.pose.x > 0.0
-
-    out, decision = check_for_motion(velocity_cmd("v-2"), assessment(blocked=("tracking",)), 0)
-    assert "action_not_permitted" in decision.reasons
-    assert out.kind == K.HOVER and out.velocity is None
-    assert m.submit(out, 0).accepted, "Motion must accept Safety's hold replacement"
 
 
 @pytest.mark.parametrize("mapped", [False, True])
@@ -141,8 +129,6 @@ def test_emergency_replacement_of_a_velocity_command_is_accepted(monkeypatch, ma
 
 def test_grounded_emergency_disarm_of_a_velocity_command_is_accepted():
     """Safety's grounded-emergency DISARM must reach Motion without the velocity."""
-    import dataclasses
-
     m = MotionStub()
     m.arm()
     verdict = dataclasses.replace(assessment(emergency=True), grounded=True)
@@ -154,16 +140,13 @@ def test_grounded_emergency_disarm_of_a_velocity_command_is_accepted():
 
 def test_only_a_copied_velocity_is_cleared():
     """The clean-up touches Safety's replacements, never an allowed command."""
-    from motion_engine.safety_adapter import _without_copied_velocity
-    from dataclasses import replace
-
     original = velocity_cmd("v-1")
     assert _without_copied_velocity(original, original) is original
-    hover = replace(original, command_id="v-1-safety", kind=K.HOVER, source="safety")
+    hover = dataclasses.replace(original, command_id="v-1-safety", kind=K.HOVER, source="safety")
     cleaned = _without_copied_velocity(hover, original)
     assert cleaned.velocity is None
-    assert replace(cleaned, velocity=hover.velocity) == hover, "only velocity may change"
-    still_velocity = replace(original, command_id="v-1-x")
+    assert dataclasses.replace(cleaned, velocity=hover.velocity) == hover, "only velocity may change"
+    still_velocity = dataclasses.replace(original, command_id="v-1-x")
     assert _without_copied_velocity(still_velocity, original) is still_velocity
 
 
@@ -264,8 +247,6 @@ def test_unrenewed_command_is_expired_and_held():
 
 
 def test_non_motion_replacement_is_refused(monkeypatch):
-    from motion_engine import safety_adapter
-
     c = cmd("trk-1", K.TRACK_TARGET, 0, target=Pose(5.0, 0.0, 10.0, 0.0))
     monkeypatch.setattr(
         safety_adapter, "check_command",

@@ -398,6 +398,9 @@ py -3 -m pytest motion_engine/tests/test_state_machine_alignment.py   # Motion a
 py -3 motion_engine/synthetic/generate_motion_data.py      # synthetic CSVs, see synthetic/README.md
 ```
 
+[`tests/README.md`](tests/README.md) explains every test file and what each
+test checks.
+
 `test_motion_contract.py` covers the README's Motion deliverables: approach
 and descent, cancellation, ordinary disarm, renewal, rejected input, and
 identical traces from identical inputs. Expiry and the emergency latch are

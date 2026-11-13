@@ -1,19 +1,20 @@
-"""Tests for the kinematic MotionStub (motion_engine/motion_stubs.py).
+"""Tests for the kinematic MotionStub's direct method API (motion_engine/motion_stubs.py).
+
+These call `arm()`, `move_to()`, `step()`... directly, the way scripts and
+the synthetic-data generator use the stub. The coordinator's path
+(`submit()` / `feedback()`) is covered in test_motion_contract.py; note the
+two differ on purpose: the direct API *clamps* an out-of-limits target to
+the fence, the contract *rejects* it.
 
 The stub is kinematic on purpose, so these tests can be exact about timing:
 at a 5 m/s horizontal cap, 20 m takes 4 s -- not "roughly". Logging is checked
-against `contracts.MemoryLogSink` with a fake clock: the records (module,
-event, fields, state, truth, decision) are what the coordinator relies on.
-Text rendering belongs to the shared logger (planned for
-`state_machine/logging_format.py`), so it is not tested here. The
-command/ack/feedback contract has its own file, test_motion_contract.py.
+against `contracts.MemoryLogSink` with a fake float clock: the records
+(module, event, fields, state, truth, decision) are what the coordinator
+relies on. Writing them out is UniversalLog's job (test_universal_logging.py).
 """
 
 import ast
 import math
-from pathlib import Path
-
-_MOTION_ENGINE_ROOT = Path(__file__).resolve().parents[1]
 
 import pytest
 
@@ -25,8 +26,7 @@ from motion_engine.motion_stubs import (
     Pose,
     wrap_180,
 )
-
-DT = 0.1
+from motion_engine.tests.motion_rig import DT, MOTION_ENGINE_ROOT
 
 
 class FakeClock:
@@ -454,49 +454,44 @@ def test_log_context_is_attached(motion, logger):
 _NON_COMMANDS = {"at_target", "set_log_context"}
 
 
+def _stub_methods():
+    """{name: (FunctionDef node, source text)} for every method of MotionStub."""
+    source = (MOTION_ENGINE_ROOT / "motion_stubs.py").read_text(encoding="utf-8")
+    cls = next(n for n in ast.parse(source).body
+               if isinstance(n, ast.ClassDef) and n.name == "MotionStub")
+    lines = source.splitlines()
+    return {
+        n.name: (n, "\n".join(lines[n.lineno - 1:n.end_lineno]))
+        for n in cls.body if isinstance(n, ast.FunctionDef)
+    }
+
+
 def test_every_public_command_has_phase1_hook():
     """Every command (and step) must say which real PX4 command it becomes.
 
     Enumerates public methods from the source rather than a hard-coded list,
     so a new command added without a hook fails this test.
     """
-    src_path = _MOTION_ENGINE_ROOT / "motion_stubs.py"
-    source = src_path.read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "MotionStub")
-    methods = [
-        n for n in cls.body
-        if isinstance(n, ast.FunctionDef)
-        and not n.name.startswith("_")
-        and not any(isinstance(d, ast.Name) and d.id == "property" for d in n.decorator_list)
-        and n.name not in _NON_COMMANDS
-    ]
-    names = {m.name for m in methods}
+    commands = {
+        name: body for name, (node, body) in _stub_methods().items()
+        if not name.startswith("_")
+        and not any(isinstance(d, ast.Name) and d.id == "property" for d in node.decorator_list)
+        and name not in _NON_COMMANDS
+    }
     expected = {
         "arm", "disarm", "takeoff", "move_to", "hover", "stop", "set_yaw",
         "set_orientation", "goto_dock_approach", "descend_to_dock",
         "land", "emergency_land", "step",
-        "submit", "feedback", "track_position",
+        "submit", "feedback", "track_position", "set_velocity",
     }
-    assert expected <= names
-    lines = source.splitlines()
-    missing = [
-        m.name for m in methods
-        if "# PHASE-1 HOOK:" not in "\n".join(lines[m.lineno - 1:m.end_lineno])
-    ]
+    assert expected <= set(commands)
+    missing = [name for name, body in commands.items() if "# PHASE-1 HOOK:" not in body]
     assert missing == [], f"methods without a '# PHASE-1 HOOK:' comment: {missing}"
 
 
 def test_position_hooks_mention_ned_conversion():
-    source = (_MOTION_ENGINE_ROOT / "motion_stubs.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "MotionStub")
-    lines = source.splitlines()
-    bodies = {
-        n.name: "\n".join(lines[n.lineno - 1:n.end_lineno])
-        for n in cls.body if isinstance(n, ast.FunctionDef)
-    }
-    for name in ("move_to", "track_position", "goto_dock_approach", "step"):
+    bodies = {name: body for name, (_, body) in _stub_methods().items()}
+    for name in ("move_to", "track_position", "goto_dock_approach", "set_velocity", "step"):
         assert "NED" in bodies[name], name
     for name, cmd in {
         "arm": "MAV_CMD_COMPONENT_ARM_DISARM",
@@ -504,6 +499,7 @@ def test_position_hooks_mention_ned_conversion():
         "takeoff": "MAV_CMD_NAV_TAKEOFF",
         "move_to": "SET_POSITION_TARGET_LOCAL_NED",
         "track_position": "/fmu/in/trajectory_setpoint",
+        "set_velocity": "/fmu/in/trajectory_setpoint",
         "goto_dock_approach": "SET_POSITION_TARGET_LOCAL_NED",
         "hover": "MAV_CMD_NAV_LOITER_UNLIM",
         "stop": "MAV_CMD_NAV_LOITER_UNLIM",

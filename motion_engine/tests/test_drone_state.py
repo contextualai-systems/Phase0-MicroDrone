@@ -9,9 +9,6 @@ example payload round-trips through JSON and validates.
 import dataclasses
 import json
 import re
-from pathlib import Path
-
-_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 import pytest
 
@@ -30,8 +27,7 @@ from motion_engine.contracts import (
     VehicleFeedback,
 )
 from motion_engine.motion_stubs import MotionStub
-
-DT_NS = 100_000_000
+from motion_engine.tests.motion_rig import DT_NS, MOTION_ENGINE_ROOT, VALIDITY_NS
 
 #: Every key `VehicleFeedback.to_dict()` had before DroneState. Consumers
 #: (run_loop snapshot, trace checker, docking logs) rely on these.
@@ -45,23 +41,32 @@ NEW_KEYS = {"frame", "velocity", "orientation", "flight_mode", "target_velocity"
 
 
 def _readme_example() -> dict:
-    text = (_REPO_ROOT / "motion_engine" / "README.md").read_text(encoding="utf-8")
+    text = (MOTION_ENGINE_ROOT / "README.md").read_text(encoding="utf-8")
     section = text[text.index("### DroneState contract"):]
     block = re.search(r"```json\n(.*?)\n```", section, re.S)
     assert block, "README DroneState section has no JSON example"
     return json.loads(block.group(1))
 
 
-def _flying_state() -> DroneState:
+def _command(cid, kind, now_ns, expires_ns=None, **kw) -> Command:
+    return Command(cid, kind, "TRACKING", now_ns, expires_ns, "t", "t", **kw)
+
+
+def _launched():
+    """(MotionStub, now_ns): armed and taken off to 5 m through submit(), then
+    30 ticks (3 s) so it sits still at 5 m. The README example starts here."""
     m = MotionStub(clock=SimulationClock())
-    def c(cid, kind, **kw):
-        return Command(cid, kind, "HOVERING", 0, kw.pop("exp", None), "t", "t", **kw)
-    m.submit(c("a", K.ARM), 0)
-    m.submit(c("t", K.TAKEOFF, target=Pose(0, 0, 5, 0)), 0)
+    assert m.submit(_command("a", K.ARM, 0), 0).accepted
+    assert m.submit(_command("t", K.TAKEOFF, 0, target=Pose(0, 0, 5, 0)), 0).accepted
     now = 0
     for _ in range(30):
         m.step(0.1, now_ns=now)
         now += DT_NS
+    return m, now
+
+
+def _flying_state() -> DroneState:
+    m, now = _launched()
     return m.feedback(now)
 
 
@@ -195,17 +200,10 @@ def test_readme_example_round_trips_through_json():
 
 
 def test_readme_example_matches_what_the_stub_publishes():
-    m = MotionStub(clock=SimulationClock())
-    now = 0
-    def c(cid, kind, exp=None, **kw):
-        return Command(cid, kind, "TRACKING", now, exp, "t", "t", **kw)
-    m.submit(c("a", K.ARM), now)
-    m.submit(c("t", K.TAKEOFF, target=Pose(0, 0, 5, 0)), now)
-    for _ in range(30):
-        m.step(0.1, now_ns=now)
-        now += DT_NS
+    m, now = _launched()
     v = Velocity(2.0, 1.0, 0.0, yaw_rate_deg_s=10.0)
-    assert m.submit(c("vel-1", K.SET_VELOCITY, exp=now + 200_000_000, velocity=v), now).accepted
+    vel = _command("vel-1", K.SET_VELOCITY, now, now + VALIDITY_NS, velocity=v)
+    assert m.submit(vel, now).accepted
     m.step(0.1, now_ns=now)
     now += DT_NS
     published = m.feedback(now).to_dict()

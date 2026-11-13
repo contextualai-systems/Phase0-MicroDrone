@@ -71,7 +71,7 @@ def poses(rig: Rig, start: int = 0) -> List[Pose]:
 # A. Command loss -- the coordinator stops renewing mid-flight
 # ==========================================================================
 
-# (name, set-up flight, command to lose, how far in before losing it)
+# name -> (launch altitude, kind of the command that gets lost, its target pose or velocity)
 LOSS_CASES = {
     "move_to": (5.0, K.MOVE_TO, Pose(40.0, 0.0, 5.0, 0.0)),
     "track_target": (5.0, K.TRACK_TARGET, Pose(30.0, 30.0, 8.0, 45.0)),
@@ -699,49 +699,66 @@ def test_bad_dt_does_not_keep_an_expired_target_alive(airborne_rig):
 TIMEOUT_TICKS = LIM.comm_loss_land_timeout_ns // DT_NS
 
 
-def _lose_link_mid_move(rig: Rig, goal: Pose = Pose(40.0, 0.0, 5.0, 0.0)) -> int:
-    """Fly toward `goal`, stop renewing, run until Motion holds.
+def _lose_link_mid_move(rig: Rig, c: Command = None) -> int:
+    """Fly `c` (default: a MOVE_TO 40 m east) for 0.5 s, stop renewing, and
+    run until Motion holds.
 
     Returns the simulation time of the step in which the hold began.
     """
-    c = rig.cmd(K.MOVE_TO, goal)
+    if c is None:
+        c = rig.cmd(K.MOVE_TO, Pose(40.0, 0.0, 5.0, 0.0))
     for _ in range(5):
-        rig.tick(rig.renewed(c))
+        assert rig.submit(rig.renewed(c)).accepted
+        rig.tick()
     fb = rig.tick()
     while fb.status != CommandStatus.EXPIRED_HOLD:
         fb = rig.tick()
     return rig.now - DT_NS
 
 
-def test_escalation_lands_in_place_after_the_timeout(airborne_rig):
-    rig = airborne_rig
-    hold_began = _lose_link_mid_move(rig)
+def _hold_until_comm_loss_landing(rig: Rig, hold_began: int):
+    """Tick through the 10 s expired hold; return (held pose, feedback of the
+    tick the comm-loss landing started). Checks the hold stays put and that
+    the landing starts exactly at the timeout, before that tick's movement."""
     held = rig.motion.pose
     for _ in range(TIMEOUT_TICKS - 1):          # 9.9 s more: still inside the limit
         fb = rig.tick()
         assert fb.status == CommandStatus.EXPIRED_HOLD and fb.reason is None
         assert fb.status_reason == Reason.COMMAND_EXPIRED and fb.flight_mode == FlightMode.HOLD
+        assert fb.target_velocity is None
         assert rig.motion.pose == held
     assert not records(rig.log, "comm_loss_landing")
     assert not rig.motion.comm_loss_landing
 
-    # Exactly 10 s after the hold began (timers fire at the limit): land,
-    # and the landing applies before that tick's movement.
+    # Exactly 10 s after the hold began (timers fire at the limit).
     fb = rig.tick()
     assert rig.now - DT_NS - hold_began == LIM.comm_loss_land_timeout_ns
     assert fb.status == CommandStatus.COMM_LOSS_LANDING
-    assert fb.flight_mode == FlightMode.LAND
+    assert fb.flight_mode == FlightMode.LAND and fb.target_velocity is None
     assert fb.status_reason == Reason.COMM_LOSS_LANDING == fb.reason
     assert fb.valid and fb.validate() is None
     assert fb.active_kind == "LAND" and fb.target == Pose(held.x, held.y, 0.0, held.yaw_deg)
     assert rig.motion.pose.z == pytest.approx(held.z - LIM.max_vertical_speed_mps * DT)
-    assert fb.to_dict()["status"] == "comm_loss_landing"
+    return held, fb
 
+
+def _land_straight_down(rig: Rig, held: Pose, fb):
+    """Tick until the comm-loss landing settles; it must not drift sideways."""
     while not fb.landing_settled:
         fb = rig.tick()
         assert rig.motion.pose.horizontal_distance_to(held) == 0.0, "landing must be straight down"
         assert fb.validate() is None, "DroneState must stay coherent while landing"
     assert fb.status == CommandStatus.LANDED and fb.grounded
+    return fb
+
+
+def test_escalation_lands_in_place_after_the_timeout(airborne_rig):
+    rig = airborne_rig
+    hold_began = _lose_link_mid_move(rig)
+    held, fb = _hold_until_comm_loss_landing(rig, hold_began)
+    assert fb.to_dict()["status"] == "comm_loss_landing"
+
+    fb = _land_straight_down(rig, held, fb)
     assert fb.flight_mode == FlightMode.LAND
     assert fb.reason == Reason.COMM_LOSS_LANDING, "a returning coordinator must see why it landed"
     assert fb.status_reason == Reason.COMM_LOSS_LANDING
@@ -919,36 +936,15 @@ def test_expired_velocity_command_escalates_to_comm_loss_landing(airborne_rig):
     expiry -> expired_hold in place (velocity mode ends) -> after the
     comm-loss timeout, a straight-down landing."""
     rig = airborne_rig
-    vel = replace(rig.cmd(K.SET_VELOCITY), velocity=Velocity(2.0, 1.0, 0.0, 10.0))
-    for _ in range(5):
-        ack = rig.submit(rig.renewed(vel))
-        assert ack.accepted, ack
-        fb = rig.tick()
-        assert fb.flight_mode == FlightMode.VELOCITY and fb.status == CommandStatus.IN_PROGRESS
-    fb = rig.tick()
-    while fb.status != CommandStatus.EXPIRED_HOLD:
-        fb = rig.tick()
-    hold_began = rig.now - DT_NS
-    held = rig.motion.pose
-    assert fb.flight_mode == FlightMode.HOLD and fb.target_velocity is None
-    assert fb.status_reason == Reason.COMMAND_EXPIRED
-    assert rig.motion.velocity_setpoint is None
+    vel = rig.cmd(K.SET_VELOCITY, velocity=Velocity(2.0, 1.0, 0.0, 10.0))
+    assert rig.submit(vel).accepted
+    assert rig.motion.feedback(rig.now).flight_mode == FlightMode.VELOCITY
+    hold_began = _lose_link_mid_move(rig, vel)
+    assert rig.motion.velocity_setpoint is None          # velocity mode ended at expiry
 
-    for _ in range(TIMEOUT_TICKS - 1):
-        fb = rig.tick()
-        assert fb.status == CommandStatus.EXPIRED_HOLD and rig.motion.pose == held
-    fb = rig.tick()
-    assert rig.now - DT_NS - hold_began == LIM.comm_loss_land_timeout_ns
-    assert fb.status == CommandStatus.COMM_LOSS_LANDING
-    assert fb.flight_mode == FlightMode.LAND and fb.target_velocity is None
-    assert fb.status_reason == Reason.COMM_LOSS_LANDING == fb.reason
-    assert fb.active_kind == "LAND" and fb.target == Pose(held.x, held.y, 0.0, held.yaw_deg)
-    assert fb.validate() is None
-
-    while not fb.landing_settled:
-        fb = rig.tick()
-        assert rig.motion.pose.horizontal_distance_to(held) == 0.0, "landing must be straight down"
-    assert fb.status == CommandStatus.LANDED and fb.grounded and fb.armed
+    held, fb = _hold_until_comm_loss_landing(rig, hold_began)
+    fb = _land_straight_down(rig, held, fb)
+    assert fb.armed
     (rec,) = records(rig.log, "comm_loss_landing")
     assert rec.fields["since_ns"] == hold_began
     # The expired velocity ID is spent: replaying it cannot restart velocity mode.

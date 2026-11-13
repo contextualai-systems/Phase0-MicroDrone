@@ -11,7 +11,6 @@ If the state machine changes how it drives Motion and Motion stops agreeing,
 this file is where it shows up.
 """
 
-
 import pytest
 
 import state_machine.run_loop as run_loop
@@ -24,10 +23,9 @@ from motion_engine.contracts import (
     Pose,
 )
 from motion_engine.motion_stubs import MotionStub
-from motion_engine.tests.motion_rig import DT, Rig
+from motion_engine.tests.motion_rig import DT, PAD, Rig
 from motion_engine.trace_checker import TraceRecorder, check_trace
 
-PAD = Pose(0.0, 0.0, 0.0, 0.0)
 TAKEOFF_Z = 5.0  # run_loop.launch_drone() climbs to 5 m
 
 

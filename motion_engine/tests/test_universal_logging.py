@@ -18,9 +18,6 @@ import json
 import logging
 import math
 from importlib.util import module_from_spec, spec_from_file_location
-from pathlib import Path
-
-_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 import pytest
 
@@ -32,11 +29,9 @@ from motion_engine.contracts import (
     SimulationClock,
 )
 from motion_engine.motion_stubs import MotionStub
+from motion_engine.tests.motion_rig import DT, REPO_ROOT, VALIDITY_NS
 from motion_engine.universal_logging import UniversalLogSink, log_entry
 from state_machine.state_machine import State
-
-DT = 0.1
-VALIDITY_NS = 200_000_000
 
 
 def _drive(logger, state=None):
@@ -178,7 +173,7 @@ def test_non_json_values_do_not_break_the_logger(universal_log_file):
 
 
 def test_motion_and_cv_share_one_run_file(universal_log_file):
-    path = _REPO_ROOT / "cv" / "universal_logging.py"
+    path = REPO_ROOT / "cv" / "universal_logging.py"
     spec = spec_from_file_location("_test_cv_universal_logging", path)
     cv_logging = module_from_spec(spec)
     spec.loader.exec_module(cv_logging)
