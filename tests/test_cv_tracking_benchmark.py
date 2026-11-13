@@ -4,6 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 import tempfile
 import unittest
+import json
 from types import SimpleNamespace
 
 import numpy as np
@@ -16,6 +17,42 @@ from cv.tracking_sequences import make_sequence, SCENARIOS
 
 
 class TrackingBenchmarkTests(unittest.TestCase):
+    def test_crossing_visibility_retention_and_replay(self):
+        import cv2
+        from cv.camera_providers import render_marker
+        from cv.tracking_sequences import CALIBRATION, SIDE_M
+
+        images, truth = make_sequence("crossing")
+        rear = [frame["objects"][0] for frame in truth]
+        self.assertLess(rear[0]["corners_px"][0][0], truth[0]["objects"][1]["corners_px"][0][0])
+        self.assertGreater(rear[-1]["corners_px"][0][0], truth[-1]["objects"][1]["corners_px"][0][0])
+        self.assertTrue(any(0 < obj["visible_fraction"] < 1 for obj in rear))
+        self.assertEqual(rear[18]["visible_fraction"], 0.)
+        self.assertFalse(rear[18]["observable"])
+        # At full overlap the near marker's pixels win, including white cells.
+        near = truth[18]["objects"][1]
+        expected = render_marker(CALIBRATION, marker_id=23, side_m=SIDE_M,
+                                 tvec=near["position_camera_m"])
+        mask = np.zeros((480, 640), np.uint8)
+        cv2.fillConvexPoly(mask, np.rint(near["corners_px"]).astype(np.int32), 1)
+        np.testing.assert_array_equal(images[18][mask > 0], expected[mask > 0])
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp)/"crossing"
+            first = run(output, scenarios=("crossing",))["sequences"]["crossing"]
+            replay = run(Path(temp)/"replay", dataset=output)["sequences"]["crossing"]
+            updates = [json.loads(line)["update"] for line in (output/"updates.jsonl").read_text().splitlines()]
+            first.pop("latency")
+            replay.pop("latency")
+            self.assertEqual(first, replay)
+            self.assertEqual(first["tp"] + first["fn"], sum(obj["observable"] for f in truth for obj in f["objects"]))
+            self.assertEqual(first["unexpected_id_changes"], 0)
+            before = next(d for d in updates[10]["detections"] if d["object_id"] == "aruco:0:17")
+            after = next(d for d in updates[25]["detections"] if d["object_id"] == "aruco:0:17")
+            self.assertEqual(before["tracking_id"], after["tracking_id"])
+            retained = next(t for t in updates[18]["tracks"] if t["tracking_id"] == before["tracking_id"])
+            self.assertEqual(retained["estimate_kind"], "retained")
+            self.assertEqual(first["emitted_lifecycle_audit"]["retention_timestamp_or_pose_violations"], 0)
+
     def test_pose_errors_coverage_and_legacy_truth(self):
         frame = self.truth(0)
         obj = frame["objects"][0]

@@ -157,8 +157,8 @@ python -m unittest discover -s tests -p 'test_computer_vision.py' -v
 python -m unittest discover -s tests -p 'test_cv*.py' -v
 ```
 
-Current coverage is 65 tests: 19 fixture/interface, 10 perception, 10 benchmark,
-17 tracking/shared-publication, and 9 temporal-benchmark tests. Tests run
+Current coverage is 66 tests: 19 fixture/interface, 10 perception, 10 benchmark,
+17 tracking/shared-publication, and 10 temporal-benchmark tests. Tests run
 headlessly, including temporary-video
 playback. `.github/workflows/cv-ci.yml` defines the same suites on Python 3.12
 and 3.14; configured CI is not itself evidence that a remote run passed.
@@ -328,10 +328,10 @@ tracking has its own temporal benchmark, validation suite, and diagnostic replay
 
 This runner exercises actual pixels through `PerceptionPipeline` and
 `PerceptionPublisher`. It preserves the existing shared message format and uses
-an explicitly synthetic, fixed downward-camera-to-ENU transform. Each run has seven
-36-frame sequences at 10 Hz (252 frames total): independent marker motion, short
+an explicitly synthetic, fixed downward-camera-to-ENU transform. Each run has eight
+36-frame sequences at 10 Hz (288 frames total): independent marker motion, short
 full occlusion, long full occlusion, three missing camera frames, duplicate IDs,
-marker entry/exit/re-entry, and simultaneous rotation/tilt. The `rotation_tilt`
+marker entry/exit/re-entry, simultaneous rotation/tilt, and crossing markers. The `rotation_tilt`
 scenario varies in-plane rotation and out-of-plane tilt independently for two
 markers (up to approximately 34 degrees each). Select it in playback to inspect
 tracking continuity as perspective changes; pose accuracy is measured separately below.
@@ -405,7 +405,15 @@ manifests lacking orientation truth exclude affected frames, counted as
 `frames_without_pose_truth`; their orientation is never guessed. Playback continues
 to display shared updates; evaluation results remain separate from runtime messages.
 
-These are baseline scripts with separated marker paths, not crossing-object,
+The `crossing` scenario moves marker 17 behind marker 23 at fixed camera depths
+of 1.2 m and 0.9 m. They exchange image sides, with full overlap at frame 18.
+Near-marker pixels overwrite far-marker pixels. Raster masks determine each
+object's `visible_fraction`: partial occlusion remains a detection opportunity
+(misses count as FN); fully hidden markers are excluded. The regression checks
+retention and same-ID reacquisition without requiring perfect overlap detection.
+Select `crossing` in a newly generated playback to inspect the sequence.
+
+These are scripted fiducial baselines, not general-object,
 cross-camera, or real-world robustness evidence. No prediction or new motion,
 state-machine, or shared-message behavior is introduced.
 
@@ -619,7 +627,7 @@ pose, or tracking interfaces must be rebuilt.
 | Schedule CV reads and heartbeats, preserve capture timestamps, handle EOF/failures and resets | Coordinator with CV support | Integrated tests at differing camera/tick rates, including stale cached input |
 | Supply capture-time ENU transforms and adapt the designated pad marker | Coordinator / pose supplier / Docking | Explicit frame/origin agreement; missing transforms produce unavailable alignment |
 | Consume detections and retained tracks according to freshness/validity policy | Safety / Docking / coordinator | Retained identity never silently becomes a fresh measurement or descent permission |
-| Expand temporal evaluation beyond the implemented baseline sequences | CV | Crossing/overlapping paths, broader degradation sweeps, and consumer-agreed robustness limits |
+| Expand temporal evaluation beyond the implemented baseline sequences | CV | Broader crossing speeds/depths and degradation sweeps, and consumer-agreed robustness limits |
 | Agree usable accuracy/latency limits and condition envelope | CV and consumers | Measured acceptance criteria; synthetic range not presented as hardware capability |
 | ROS2 message definitions and serialization mapping | CV / integration | Message definitions preserve timestamps, nullability, validity, frame, and measured/retained distinctions; not implemented yet |
 | Integrated perception-to-consumer replay | Cross-team | Logs explain observed, absent, missing, stale, retained, expired, and reacquired states without drone hardware |

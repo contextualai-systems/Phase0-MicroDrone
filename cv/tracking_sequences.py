@@ -11,7 +11,7 @@ CALIBRATION = CameraCalibration("sequence_camera", 640, 480,
 SIDE_M = .12
 FPS = 10
 SCENARIOS = ("motion", "short_occlusion", "long_occlusion", "missing_frames", "duplicate_id", "entry_exit",
-             "rotation_tilt")
+             "rotation_tilt", "crossing")
 
 
 def make_sequence(name, seed=2026):
@@ -26,6 +26,7 @@ def make_sequence(name, seed=2026):
         image = np.full((480, 640, 3), 255, np.uint8)
         missing = name == "missing_frames" and 10 <= index <= 12
         objects = []
+        masks = []
         for entity, marker_id, x, y, slot in (
             ("A", 17, -.22 + .04*np.sin(index/5), -.12, 0),
             ("B", 23, .2, .12 + .04*np.cos(index/6), 1),
@@ -39,6 +40,12 @@ def make_sequence(name, seed=2026):
                 (name == "short_occlusion" and 10 <= index <= 11)
                 or (name == "long_occlusion" and 10 <= index <= 17))
             position = np.array([x + offsets[slot, 0], y + offsets[slot, 1], 1.])
+            if name == "crossing":
+                # Far A is drawn first, then near B. They exchange image sides
+                # and align at frame 18; speed keeps the overlap brief.
+                displacement = float(np.clip(.035 * (index-18), -.28, .28))
+                position = np.array([displacement if entity == "A" else -displacement,
+                                     0., 1.2 if entity == "A" else .9])
             rvec = np.array([np.pi, 0., 0.])
             if name == "rotation_tilt":
                 # Independent in-plane rotation and out-of-plane tilt; marker
@@ -54,6 +61,7 @@ def make_sequence(name, seed=2026):
                                    rvec=rvec, tvec=position)
             mask = np.zeros((480, 640), np.uint8)
             cv2.fillConvexPoly(mask, np.rint(corners).astype(np.int32), 255)
+            masks.append(mask > 0)
             image[mask > 0] = marker[mask > 0]
             if occluded:
                 # Fully opaque cover; present physically but not observable.
@@ -62,6 +70,18 @@ def make_sequence(name, seed=2026):
                             "observable": not (occluded or missing), "occluded": occluded,
                             "corners_px": corners.tolist(), "position_camera_m": position.tolist(),
                             "rotation_camera_matrix": cv2.Rodrigues(rvec)[0].tolist()})
+        if name == "crossing":
+            for i, obj in enumerate(objects):
+                covered = np.zeros_like(masks[i])
+                for nearer in masks[i+1:]:
+                    covered |= nearer
+                total = int(np.count_nonzero(masks[i]))
+                visible = int(np.count_nonzero(masks[i] & ~covered))
+                obj["visible_fraction"] = visible / total if total else 0.
+                obj["occluded"] = visible < total
+                # Partial occlusion remains a detection opportunity: misses
+                # count as FN. Only completely hidden markers are excluded.
+                obj["observable"] = visible > 0
         images.append(None if missing else image)
         frames.append({"frame_index": index, "timestamp_ns": index*100_000_000,
                        "missing_frame": missing, "objects": objects})

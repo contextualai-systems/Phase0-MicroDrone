@@ -102,7 +102,8 @@ def markdown(report):
               "No warmup frames are discarded: cold-start latency is included. Publication is a local append callback.",
               "Images are preloaded; timing excludes generation, PNG save/load, rendering, evaluation, and playback.",
               "End-to-end timing includes both pipeline and shared-publisher JSONL logging (buffered writes, no fsync).",
-              "These are scripted baseline sequences, not real-camera or crossing-object/general tracking benchmarks."]
+              "Partial crossing occlusion remains a detection opportunity; only fully hidden markers are excluded.",
+              "These are scripted fiducial sequences, not real-camera or general-object tracking benchmarks."]
     return "\n".join(lines)+"\n"
 
 
