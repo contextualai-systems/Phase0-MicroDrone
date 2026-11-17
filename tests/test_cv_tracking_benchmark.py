@@ -4,16 +4,77 @@ from dataclasses import replace
 from pathlib import Path
 import tempfile
 import unittest
+import json
+from types import SimpleNamespace
 
 import numpy as np
 
 from cv.shared_perception import PerceptionUpdate, SharedDetectionResult, TrackState, WorldPose
 from cv.tracking_benchmark import run
-from cv.tracking_metrics import evaluate_sequence
+from cv.tracking_metrics import evaluate_sequence, evaluate_pose_frame, summarize_pose
+from cv.perception_types import DetectionResult
 from cv.tracking_sequences import make_sequence, SCENARIOS
 
 
 class TrackingBenchmarkTests(unittest.TestCase):
+    def test_crossing_visibility_retention_and_replay(self):
+        import cv2
+        from cv.camera_providers import render_marker
+        from cv.tracking_sequences import CALIBRATION, SIDE_M
+
+        images, truth = make_sequence("crossing")
+        rear = [frame["objects"][0] for frame in truth]
+        self.assertLess(rear[0]["corners_px"][0][0], truth[0]["objects"][1]["corners_px"][0][0])
+        self.assertGreater(rear[-1]["corners_px"][0][0], truth[-1]["objects"][1]["corners_px"][0][0])
+        self.assertTrue(any(0 < obj["visible_fraction"] < 1 for obj in rear))
+        self.assertEqual(rear[18]["visible_fraction"], 0.)
+        self.assertFalse(rear[18]["observable"])
+        # At full overlap the near marker's pixels win, including white cells.
+        near = truth[18]["objects"][1]
+        expected = render_marker(CALIBRATION, marker_id=23, side_m=SIDE_M,
+                                 tvec=near["position_camera_m"])
+        mask = np.zeros((480, 640), np.uint8)
+        cv2.fillConvexPoly(mask, np.rint(near["corners_px"]).astype(np.int32), 1)
+        np.testing.assert_array_equal(images[18][mask > 0], expected[mask > 0])
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp)/"crossing"
+            first = run(output, scenarios=("crossing",))["sequences"]["crossing"]
+            replay = run(Path(temp)/"replay", dataset=output)["sequences"]["crossing"]
+            updates = [json.loads(line)["update"] for line in (output/"updates.jsonl").read_text().splitlines()]
+            first.pop("latency")
+            replay.pop("latency")
+            self.assertEqual(first, replay)
+            self.assertEqual(first["tp"] + first["fn"], sum(obj["observable"] for f in truth for obj in f["objects"]))
+            self.assertEqual(first["unexpected_id_changes"], 0)
+            before = next(d for d in updates[10]["detections"] if d["object_id"] == "aruco:0:17")
+            after = next(d for d in updates[25]["detections"] if d["object_id"] == "aruco:0:17")
+            self.assertEqual(before["tracking_id"], after["tracking_id"])
+            retained = next(t for t in updates[18]["tracks"] if t["tracking_id"] == before["tracking_id"])
+            self.assertEqual(retained["estimate_kind"], "retained")
+            self.assertEqual(first["emitted_lifecycle_audit"]["retention_timestamp_or_pose_violations"], 0)
+
+    def test_pose_errors_coverage_and_legacy_truth(self):
+        frame = self.truth(0)
+        obj = frame["objects"][0]
+        obj.update(position_camera_m=[0., 0., 1.], rotation_camera_matrix=np.eye(3).tolist())
+        detection = DetectionResult(obj["object_id"], "aruco_marker", obj["corners_px"],
+                                    position_x=.1, position_y=-.2, position_z=1.3,
+                                    orientation=(0., 0., np.sin(np.pi/12), np.cos(np.pi/12)),
+                                    pose_valid=True)
+        row = evaluate_pose_frame(frame, SimpleNamespace(detections=[detection]))
+        summary = summarize_pose([row])
+        self.assertAlmostEqual(summary["xyz_error_m"]["z"]["bias"], .3)
+        self.assertAlmostEqual(summary["rotation_error_deg"]["mae"], 30.)
+        self.assertEqual(summary["pose_coverage_all_truth"], 1.)
+        invalid = evaluate_pose_frame(frame, SimpleNamespace(detections=[replace(detection, pose_valid=False)]))
+        self.assertEqual(summarize_pose([invalid])["matched_without_usable_pose"], 1)
+        missing = evaluate_pose_frame(frame, SimpleNamespace(detections=[]))
+        self.assertEqual(summarize_pose([missing])["pose_coverage_all_truth"], 0.)
+        del obj["rotation_camera_matrix"]
+        self.assertIsNone(evaluate_pose_frame(frame, SimpleNamespace(detections=[detection])))
+        self.assertEqual(summarize_pose([None])["frames_without_pose_truth"], 1)
+        self.assertIsNone(summarize_pose([None])["rotation_error_deg"]["mae"])
+
     def truth(self, index, *, observable=True, duplicate=False):
         obj = {"entity_id": "A", "object_id": "aruco:0:17", "observable": observable,
                "corners_px": [[0, 0], [10, 0], [10, 10], [0, 10]]}
@@ -66,6 +127,8 @@ class TrackingBenchmarkTests(unittest.TestCase):
         self.assertEqual((metrics["tp"], metrics["fp"], metrics["fn"]), (72, 0, 0))
         self.assertEqual(metrics["identity_continuity"]["rate"], 1.)
         self.assertEqual(metrics["unexpected_id_changes"], 0)
+        self.assertEqual(metrics["pose_accuracy"]["pose_count"], 72)
+        self.assertTrue(np.isfinite(metrics["pose_accuracy"]["rotation_error_deg"]["p95_absolute"]))
 
     def test_short_gap_and_long_gap_have_different_id_expectations(self):
         frames = [self.truth(0), self.truth(3), self.truth(9)]
