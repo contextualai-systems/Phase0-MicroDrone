@@ -191,12 +191,14 @@ Be able to, in a running simulation, test each of these values changing.
 
 `run_loop.py` asks Safety what is allowed every tick, before `step()`:
 
-1. It builds the snapshot: the scenario's `battery`, `environment` and `dock` facts, each stamped with the current time; Motion's feedback as `vehicle`; and `context` with `flight_active`, `return_started_ns` and `launch_phase`.
+1. It builds the snapshot: the scenario's `battery`, `environment` and `dock` facts, each stamped with the current time; Motion's feedback as `vehicle`; and `context` with `flight_active`, `return_started_ns`, `launch_phase` and `pending_command_failure`.
 2. It calls Safety's `assess(snapshot, now_ns)` ([`safety_layer/safety_policy.py`](../safety_layer/safety_policy.py)) and puts the answer in `snapshot["safety"]`, where `step()` reads it.
 
 Safety fails closed: a missing section, or one older than 0.5 s, counts as not permitted. Its emergency rules (critical battery, lost comms, bad weather, stale data) only apply while `flight_active` is true.
 
-`context.return_started_ns` is for Safety's 60 s return deadline ([integration contract](../INTEGRATION_README.md) sections 5 and 6). Safety does not read it yet: the deadline is still a TODO in `safety_policy.py`, and the field name is a proposal to agree with the Safety team.
+`context.return_started_ns` is for Safety's 60 s return deadline ([integration contract](../INTEGRATION_README.md) sections 5 and 6). Once 60 s have passed since the return started, Safety raises an emergency (`return_deadline`), so a drone that can never line up with the pad lands where it is instead of retrying forever. Aborts and retries keep the original start time, so they can't reset the deadline.
+
+`context.pending_command_failure` is Motion's reason when it rejected the previous tick's command, or null. Safety turns it into an abort (`command_rejected`), and the mission goes to `ABORT` and recovers from there (contract sections 4 and 6). It clears on the next tick Motion accepts a command, or when no new command is sent.
 
 Every command then passes through `check_for_motion()` ([`motion_engine/safety_adapter.py`](../motion_engine/safety_adapter.py)) before it reaches Motion. If Safety does not permit it, Safety sends a replacement instead: `HOVER`, `LAND` if holding is not permitted either, or `EMERGENCY_LAND` during an emergency. A replacement's command id ends in `-safety`.
 
@@ -259,8 +261,8 @@ Nothing is sent while the takeoff is still climbing, because a new command would
 Not connected yet:
 
 - `TRACKING` sends no command, because there is no Navigation target yet.
-- A command that Motion rejects is printed, not handled. `context` does not yet report it to Safety (`pending_command_failure`), and has no `operator_abort`.
-- The 60 s return deadline does not fire yet (see "Safety integration"), so a drone that can never line up with the pad keeps retrying until the run ends.
+- `context` has no `operator_abort`, because the scenarios have no operator events yet. Safety already aborts on it.
+- A rejected `ARM` or `TAKEOFF` still stops the run with an error instead of going to Safety. Only the per-tick commands report `pending_command_failure`.
 
 ## MissionStatus
 
@@ -288,7 +290,7 @@ Give every module, the log and the tests the mission's status in one defined for
 | `hover_started_ns` | int or null | When ordinary hovering began (not the launch climb); null outside it | Docking's `DockingInput` |
 | `return_started_ns` | int or null | The return latch: when the first return began. Kept through aborts and retries, cleared in `IDLE` | Same as `context.return_started_ns` (a proposal) |
 | `return_reason` | str or null | Why the return started: Docking's first return reason (for example `low_battery`), or `step()`'s reason if Docking gave none | Proposal |
-| `pending_command_failure` | str or null | Motion's reason when it rejected this tick's command | Proposal |
+| `pending_command_failure` | str or null | Motion's reason when it rejected this tick's command | Sent to Safety as `context.pending_command_failure` on the next tick |
 | `outcome` | str or null | Last tick only: `completed`, `interrupted` or `failed` (see below); null on every other tick | Values from contract section 10; the rule is a proposal |
 | `schema_version` | int | Always 1 | Contract section 4 |
 | `clock` | str | Always `"simulation"` | Contract section 4 |

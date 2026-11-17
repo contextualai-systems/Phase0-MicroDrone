@@ -222,6 +222,7 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
     statuses = []           # every tick's MissionStatus, for debugging and testing
     commands = []            # every new command sent to Motion: (time_ms, kind, accepted, reason)
     last_command_id = None   # so a command renewed every tick is only recorded once
+    command_failure = None   # why Motion rejected the previous tick's command, or None; Safety aborts on it
     records = []
 
     # build the camera for the drone
@@ -260,6 +261,7 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
             "flight_active": vehicle.airborne or vehicle.armed,
             "return_started_ns": return_started,  # for Safety's 60 s return deadline
             "launch_phase": current_launch_phase(launching, vehicle),  # so step() waits for the climb
+            "pending_command_failure": command_failure,  # Safety aborts after a rejected command (contract section 6)
         }
 
 
@@ -349,6 +351,7 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
         if ack is not None and ack.command_id != last_command_id:
             commands.append((current_time_ms, ack.kind, ack.accepted, ack.reason))
             last_command_id = ack.command_id
+        command_failure = None if ack is None or ack.accepted else ack.reason  # Safety reads it next tick
 
         # Every tick: move the simulated drone, then read where it is
         motion.step(TICK_MS / 1000, now_ns=clock.timestamp_ns)
@@ -377,7 +380,7 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
                         hover_started_ns=hover_started,
                         return_started_ns=return_started,
                         return_reason=return_reason,
-                        pending_command_failure=None if ack is None or ack.accepted else ack.reason,
+                        pending_command_failure=command_failure,
                         outcome=run_outcome(newState) if tick == duration_ms // TICK_MS - 1 else None,  # only on the last tick
                     ))
 
