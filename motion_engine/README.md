@@ -72,6 +72,9 @@ Rules Motion enforces:
   the coordinator is back); late or replayed commands are rejected as usual
   and cannot cancel it. `EMERGENCY_LAND` still overrides it and latches. Like
   `LAND`, it does not auto-disarm; the coordinator disarms on `grounded`.
+  After touchdown a returning coordinator cannot simply resume: `MOVE_TO`,
+  `TRACK_TARGET`, `GOTO_DOCK_APPROACH` and `SET_VELOCITY` are rejected on the
+  ground (`not_airborne`), so only a checked `TAKEOFF` lifts off again.
   10 s matches the ordinary hover timeout, is 50x the 0.2 s command
   validity (so a dropped renewal or a 5 s loop stall never triggers it), and
   even from the 30 m ceiling at 2 m/s puts the drone on the ground within
@@ -398,6 +401,9 @@ py -3 -m pytest motion_engine/tests/test_state_machine_alignment.py   # Motion a
 py -3 motion_engine/synthetic/generate_motion_data.py      # synthetic CSVs, see synthetic/README.md
 ```
 
+[`tests/README.md`](tests/README.md) explains every test file and what each
+test checks.
+
 `test_motion_contract.py` covers the README's Motion deliverables: approach
 and descent, cancellation, ordinary disarm, renewal, rejected input, and
 identical traces from identical inputs. Expiry and the emergency latch are
@@ -560,11 +566,11 @@ active.
 | 14 | `now_ns >= expires_ns` (never for `EMERGENCY_LAND`) | `command_expired` | |
 | 15 | Same ID as the active command but a different kind, target, velocity or speed cap | `command_id_reused` | `same id, different request` |
 | 16 | Same ID as the active command, same request: **accepted** | `renewed` | |
-| 17 | ID was accepted before (including an active command that has since expired, been replaced or stopped at a velocity boundary) | `command_id_reused` | |
-| 18 | Emergency landing latched: an `EMERGENCY_LAND` under a new ID is **accepted**; anything else is rejected | `already_emergency_landing` / `emergency_descent_active` | |
+| 17 | Emergency landing latched: another `EMERGENCY_LAND` (any ID) is **accepted**; anything else is rejected, including a renewal of the command the emergency replaced | `already_emergency_landing` / `emergency_descent_active` | |
+| 18 | ID was accepted before (including an active command that has since expired, been replaced or stopped at a velocity boundary) | `command_id_reused` | |
 | 19 | Disarmed, and the kind is not `ARM` or `DISARM` | `not_armed` | |
 | 20 | `DISARM` while airborne (z > 0.05 m) | `airborne` | |
-| 21 | `SET_VELOCITY` while not airborne (prevents sliding along the pad) | `not_airborne` | `take off before flying a velocity` |
+| 21 | `MOVE_TO`, `TRACK_TARGET`, `GOTO_DOCK_APPROACH` or `SET_VELOCITY` while not airborne. Only `TAKEOFF` leaves the ground, so a grounded drone never lifts off without the launch checks (e.g. after a comm-loss landing in the field) or slides along the pad | `not_airborne` | `take off before flying to a target` / `take off before flying a velocity` |
 | 22 | `SET_VELOCITY` faster than the shared limits or the command's own caps: `hypot(vx, vy)` > horizontal, `abs(vz)` > vertical, `abs(yaw_rate_deg_s)` > yaw rate. Never scaled down | `velocity_outside_limits` | which axis, e.g. `horizontal 6.000 m/s > 5.0 m/s` |
 | 23 | Target outside the shared limits: above the ceiling, below the ground, or outside the geofence radius around home (`TAKEOFF` checks its altitude at the current x/y). Never clamped | `target_outside_limits` | |
 | 24 | Otherwise: **accepted** | `accepted` | |

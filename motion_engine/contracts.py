@@ -199,6 +199,16 @@ TARGET_KINDS = frozenset({
 #: dead-man timer that turns a stale velocity into a hold.
 VELOCITY_KINDS = frozenset({MotionCommandType.SET_VELOCITY})
 
+#: Kinds that move the vehicle horizontally, so Motion only accepts them in
+#: the air (`not_airborne` otherwise). Only TAKEOFF leaves the ground: a
+#: grounded drone must never lift off on a MOVE_TO and skip the launch checks.
+AIRBORNE_ONLY_KINDS = frozenset({
+    MotionCommandType.MOVE_TO,
+    MotionCommandType.TRACK_TARGET,
+    MotionCommandType.GOTO_DOCK_APPROACH,
+    MotionCommandType.SET_VELOCITY,
+})
+
 #: Entry actions / lifecycle steps (README §3). These may omit `expires_ns`;
 #: every other kind must carry one and be renewed by the coordinator.
 LIFECYCLE_KINDS = frozenset({

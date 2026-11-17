@@ -246,8 +246,9 @@ def test_emergency_latch_wins_over_velocity():
     fb = r.motion.feedback(r.now)
     assert fb.flight_mode == FlightMode.EMERGENCY_LAND and fb.target_velocity is None
     assert fb.validate() is None
-    # Renewing the old velocity and sending a new one are both refused.
-    assert r.submit(r.renewed(c)).reason == Reason.COMMAND_ID_REUSED
+    # Renewing the old velocity and sending a new one are both refused, and
+    # both are told the real reason: the emergency latch.
+    assert r.submit(r.renewed(c)).reason == Reason.EMERGENCY_DESCENT_ACTIVE
     ack = r.submit(_vel(r, Velocity(0.0, 1.0, 0.0)))
     assert not ack.accepted and ack.reason == Reason.EMERGENCY_DESCENT_ACTIVE
     for _ in range(40):
