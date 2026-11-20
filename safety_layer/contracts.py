@@ -150,6 +150,20 @@ class SafetyEvent:
 
         return None
 
+    def worth_logging(self, previous: Optional["SafetyEvent"]) -> bool:
+        """Should this tick's event go into the shared log?
+
+        The integration contract (section 10) asks for every override to be
+        logged, and allows the log to summarize unchanged holds. So: log the
+        first tick, any tick where an order was replaced, and any tick where
+        Safety's answer changed. Skip ticks that repeat the last logged answer.
+        """
+        if previous is None:
+            return True
+        if any(not check.allowed for check in self.commands):
+            return True
+        return _answer(self) != _answer(previous)
+
     def to_dict(self) -> dict:
         """Plain values only, ready for JSON and the shared log."""
         return {
@@ -168,3 +182,16 @@ class SafetyEvent:
             "synthetic": self.synthetic,
             "source": self.source,
         }
+
+
+def _answer(event: SafetyEvent) -> tuple:
+    """The parts of an event that make up Safety's answer, ignoring time."""
+    return (
+        tuple(sorted(event.permissions.items())),
+        event.emergency,
+        event.abort,
+        event.battery_low,
+        event.battery_critical,
+        event.battery_recovered,
+        tuple(event.reasons),
+    )

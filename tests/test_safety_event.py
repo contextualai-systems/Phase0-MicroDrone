@@ -132,50 +132,141 @@ class TestValidationCatchesBugs(unittest.TestCase):
 
 
 class TestEveryDemoTick(unittest.TestCase):
-    """Run the team's demos and check the event Safety would publish each tick.
+    """The main loop builds one SafetyEvent per tick (result["safety_events"])."""
 
-    This doesn't change the main loop. It listens in on the two Safety calls
-    the loop already makes, the same way the state machine's own tests do.
-    """
-
-    def run_demo(self, name):
+    def run_demo(self, name, safety_logger=None):
         from state_machine.demos import DEMOS
         from state_machine.run_loop import run_world
-        import state_machine.run_loop as loop
-
-        ticks = []   # one [assessment, [(order, decision), ...]] per tick
-        real_assess, real_check = loop.assess, loop.check_for_motion
-
-        def listen_assess(snap, now_ns):
-            result = real_assess(snap, now_ns)
-            ticks.append([result, []])
-            return result
-
-        def listen_check(order, assessment, now_ns):
-            sent, decision = real_check(order, assessment, now_ns)
-            ticks[-1][1].append((order, decision))
-            return sent, decision
 
         scenario, duration_ms = DEMOS[name]
-        with mock.patch.object(loop, "assess", listen_assess), \
-                mock.patch.object(loop, "check_for_motion", listen_check):
-            run_world(duration_ms, scenario=scenario)
-        return [SafetyEvent.from_checks(a, checked) for a, checked in ticks]
+        return run_world(duration_ms, scenario=scenario, safety_logger=safety_logger)
 
-    def test_every_tick_of_every_demo_is_valid(self):
+    def test_one_valid_event_per_tick_in_every_demo(self):
         from state_machine.demos import DEMOS
         for name in DEMOS:
             with self.subTest(demo=name):
-                events = self.run_demo(name)
-                self.assertTrue(events)
-                for event in events:
+                result = self.run_demo(name)
+                events = result["safety_events"]
+                self.assertEqual(len(events), len(result["statuses"]))
+                for event, status in zip(events, result["statuses"]):
                     self.assertIsNone(event.validate(), (name, event.timestamp_ns))
+                    self.assertEqual(event.timestamp_ns, status.timestamp_ns)
                     json.dumps(event.to_dict())
 
     def test_emergency_demo_records_the_emergency(self):
-        events = self.run_demo("emergency")
+        events = self.run_demo("emergency")["safety_events"]
         self.assertTrue(any(e.emergency and "critical_battery" in e.reasons for e in events))
         self.assertTrue(any(c.sent_kind == "EMERGENCY_LAND" for e in events for c in e.commands))
+
+    def test_every_order_sent_to_motion_was_checked_by_safety(self):
+        """Each command in the run results shows up as a Safety check that tick."""
+        from state_machine.demos import DEMOS
+        for name in DEMOS:
+            with self.subTest(demo=name):
+                result = self.run_demo(name)
+                checked = {}
+                for event in result["safety_events"]:
+                    for check in event.commands:
+                        checked.setdefault(event.timestamp_ns // 1_000_000, set()).add(check.sent_kind)
+                for time_ms, kind, _accepted, _reason in result["commands"]:
+                    kind = getattr(kind, "value", kind)
+                    self.assertIn(kind, checked.get(time_ms, set()), (name, time_ms, kind))
+
+
+class TestSafetyLog(unittest.TestCase):
+    """What reaches the shared log (INTEGRATION_README.md section 10)."""
+
+    def run_logged(self, name):
+        from motion_engine.universal_logging import UniversalLogSink
+        from state_machine.demos import DEMOS
+        from state_machine.run_loop import run_world
+
+        lines = []
+        sink = UniversalLogSink(write=lines.append)
+        scenario, duration_ms = DEMOS[name]
+        result = run_world(duration_ms, scenario=scenario, safety_logger=sink)
+        return result, [line["Details"] for line in lines]
+
+    def test_log_lines_are_safety_events(self):
+        result, lines = self.run_logged("full_cycle")
+        self.assertTrue(lines)
+        for line in lines:
+            self.assertEqual(line["module"], "safety")
+            self.assertEqual(line["event"], "safety_event")
+            self.assertEqual(line["fields"]["source"], "safety")
+            json.dumps(line)
+
+    def test_every_override_is_logged(self):
+        """An order Safety replaced always gets its own log line."""
+        from state_machine.demos import DEMOS
+        for name in DEMOS:
+            with self.subTest(demo=name):
+                result, lines = self.run_logged(name)
+                logged_times = {line["fields"]["timestamp_ns"] for line in lines}
+                for event in result["safety_events"]:
+                    if any(not c.allowed for c in event.commands):
+                        self.assertIn(event.timestamp_ns, logged_times)
+
+    def test_every_change_in_safetys_answer_is_logged(self):
+        result, lines = self.run_logged("emergency")
+        logged = {line["fields"]["timestamp_ns"]: line["fields"] for line in lines}
+        previous = None
+        for event in result["safety_events"]:
+            if previous is not None and event.reasons != previous.reasons:
+                self.assertIn(event.timestamp_ns, logged)
+                self.assertEqual(logged[event.timestamp_ns]["reasons"], list(event.reasons))
+            previous = event
+
+    def test_unchanged_ticks_are_summarized(self):
+        result, lines = self.run_logged("full_cycle")
+        self.assertLess(len(lines), len(result["safety_events"]) // 5)
+
+    def test_log_time_matches_the_simulation_clock(self):
+        result, lines = self.run_logged("full_cycle")
+        for line in lines:
+            self.assertAlmostEqual(line["t"] * 1e9, line["fields"]["timestamp_ns"], delta=1)
+
+    def test_no_logger_means_no_logging(self):
+        from state_machine.run_loop import run_world
+        from state_machine.demos import DEMOS
+        scenario, duration_ms = DEMOS["full_cycle"]
+        result = run_world(duration_ms, scenario=scenario)  # must not raise
+        self.assertTrue(result["safety_events"])
+
+
+class TestWorthLogging(unittest.TestCase):
+    """Which ticks go into the shared log."""
+
+    def test_first_tick_is_always_logged(self):
+        self.assertTrue(event_for(snapshot()).worth_logging(None))
+
+    def test_same_answer_later_is_skipped(self):
+        first = event_for(snapshot())
+        later = replace(event_for(snapshot()), timestamp_ns=NOW + 100_000_000)
+        self.assertFalse(later.worth_logging(first))
+
+    def test_allowed_order_with_same_answer_is_skipped(self):
+        first = event_for(snapshot(), good_order())
+        again = event_for(snapshot(), good_order())
+        self.assertTrue(again.commands[0].allowed)
+        self.assertFalse(again.worth_logging(first))
+
+    def test_replaced_order_is_always_logged(self):
+        first = event_for(snapshot())
+        replaced = event_for(snapshot(), good_order(expires_ns=NOW - 1))
+        self.assertFalse(replaced.commands[0].allowed)
+        self.assertTrue(replaced.worth_logging(first))
+        self.assertTrue(replaced.worth_logging(replaced))  # even if the same as last time
+
+    def test_new_reason_is_logged(self):
+        first = event_for(snapshot())
+        low = event_for(snapshot(battery={"percent": 15.0}))
+        self.assertTrue(low.worth_logging(first))
+
+    def test_reason_clearing_is_logged(self):
+        low = event_for(snapshot(battery={"percent": 15.0}))
+        clear = event_for(snapshot())
+        self.assertTrue(clear.worth_logging(low))
 
 
 if __name__ == "__main__":

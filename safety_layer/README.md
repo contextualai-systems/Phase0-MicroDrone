@@ -131,7 +131,15 @@ and so a run can be reconstructed later from the log.
 
 - **Publisher:** Safety. The coordinator (`run_loop.py`) builds it each tick
   with `SafetyEvent.from_checks(assessment, [(order, decision), ...])` after
-  calling `assess()` and `check_command()`.
+  calling `assess()` and `check_command()`. Every tick's event is in
+  `run_world(...)["safety_events"]`.
+- **Shared log:** `run_world(..., safety_logger=UniversalLogSink())` writes
+  events as `module="safety"`, `event="safety_event"`, with the event's
+  `to_dict()` as `fields`. Running `python -m state_machine.run_loop` does
+  this unless you pass `--no-log`. `SafetyEvent.worth_logging()` decides
+  which ticks are written: the first tick, every tick where an order was
+  replaced, and every tick where Safety's answer changed (contract section
+  10: log every override; unchanged holds may be summarized).
 - **Subscribers:** the shared log (`universal_log`), the state machine and
   Docking (which already read the same permissions from `SafetyAssessment`),
   and tests.
@@ -216,13 +224,10 @@ state machine's hover goes through.
 
 ### Open questions
 
-- Should the coordinator log an event every tick, or only when something
-  changes? Every tick is complete but long.
+- None right now.
 
 ## Not done yet
 
-- Logging not wired up: `SafetyEvent` is ready, but `run_loop.py` doesn't
-  build one yet.
 - A drone whose climb keeps timing out will land, recharge and try again,
   over and over. A limit on repeated failed launches (or requiring a reset
   first) would need the state machine team.

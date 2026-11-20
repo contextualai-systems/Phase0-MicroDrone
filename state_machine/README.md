@@ -412,3 +412,6 @@ The tests call `run_world()` without real-time pacing or logging, so they finish
 - `commands`: `(time_ms, kind, accepted, reason)` for each new command sent to Motion. A renewed command is listed once.
 - `vehicle`: Motion's feedback after the last tick (`grounded`, `armed`, `airborne`, `pose`, …).
 - `statuses`: one `MissionStatus` per tick (see "MissionStatus").
+- `safety_events`: one `SafetyEvent` per tick: Safety's answer and every order it checked that tick ([safety README](../safety_layer/README.md#safetyevent)).
+
+Pass `safety_logger=UniversalLogSink()` to also write Safety's events to the shared log (only ticks where Safety's answer changed or an order was replaced). `python -m state_machine.run_loop` does this unless `--no-log` is given.
