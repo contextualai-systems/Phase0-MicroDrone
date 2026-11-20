@@ -42,6 +42,12 @@ DOCK_SEARCH_TIMEOUT_NS = 5 * NS_PER_S
 BIRD_ABSENCE_RETURN_NS = 3 * NS_PER_S
 HOVER_RETURN_TIMEOUT_NS = 10 * NS_PER_S
 
+# The takeoff climb must finish within 10 s of launching (Section 5). If it
+# hasn't, something is wrong with the drone (weak motors, too heavy, stuck),
+# so Safety aborts and the drone comes home instead of trying to fly.
+# A normal climb to the 5 m launch altitude at 2 m/s takes about 2.5 s.
+LAUNCH_TIMEOUT_NS = 10 * NS_PER_S
+
 # The whole trip home, including waits and retries, must finish in 60 s.
 # After that, Safety calls an emergency landing (Sections 5 and 6).
 RETURN_DEADLINE_NS = 60 * NS_PER_S
