@@ -70,6 +70,15 @@ First level that applies wins:
    | Missing pad data | approach, descent |
    | Bad alignment | descent |
    | Unknown position | everything |
+   | Operator stop not yet acknowledged | launch, tracking |
+
+   The operator stop itself (`context.operator_abort`) is a one-tick abort.
+   Until it is acknowledged (`context.operator_abort_unacknowledged`), launch
+   and tracking stay blocked with `operator_abort_unacknowledged`, so the
+   drone comes home, lands, and doesn't take off again (contract section 7:
+   "requires an explicit acknowledgement before a grounded restart"). Docking
+   turns the blocked tracking into a return request, the same way it does for
+   low battery.
 
 4. **Launch checks** (on the ground only) — takeoff also needs:
 

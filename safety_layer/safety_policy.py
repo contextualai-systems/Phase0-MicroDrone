@@ -256,6 +256,14 @@ def assess(snapshot: dict, now_ns: int) -> SafetyAssessment:
     # Here we block only the actions each problem actually affects,
     # instead of shutting everything down.
 
+    if context.get("operator_abort_unacknowledged") is True:
+        # The operator stopped the mission and hasn't said OK yet (contract
+        # section 7). The stop itself is the one-tick "operator_abort" above;
+        # until it is acknowledged the drone goes home and stays home: no
+        # chasing birds, no new takeoff. Coming home and landing stay allowed.
+        blocked.update(("launch", "tracking"))
+        reasons.append("operator_abort_unacknowledged")
+
     if battery_low:
         # Not enough charge to fly around, but enough to come home and land.
         blocked.update(("launch", "tracking"))

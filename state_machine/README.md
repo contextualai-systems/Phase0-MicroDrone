@@ -263,7 +263,6 @@ Nothing is sent while the takeoff is still climbing, because a new command would
 Not connected yet:
 
 - `TRACKING` sends no command, because there is no Navigation target yet.
-- `context` has no `operator_abort`, because the scenarios have no operator events yet. Safety already aborts on it.
 - A rejected `ARM` or `TAKEOFF` still stops the run with an error instead of going to Safety. Only the per-tick commands report `pending_command_failure`.
 
 ## MissionStatus
@@ -367,7 +366,7 @@ Code lives in this folder:
 - `state_machine.py`: the `State` enum and `step()`.
 - `run_loop.py`: the 10 Hz synthetic loop. It runs a scripted demo through `step()`, sends the matching commands to Motion, and builds a `MissionStatus` every tick.
 - `contracts.py`: `MissionStatus`, the mission's status for one tick (see "MissionStatus").
-- `demos.py`: the scripted demo scenarios. They script facts about the world (bird, battery, cart, people, comms, pad alignment), not Safety's or Docking's answers. Each starts with `BIRD_DEMO_INIT` (no bird at 0 ms), and its bird events reach the loop through CV (see "CV integration").
+- `demos.py`: the scripted demo scenarios. They script facts about the world (bird, battery, cart, people, comms, pad alignment), not Safety's or Docking's answers. A scenario can also script operator events: `{"operator": {"abort": True}}` presses the stop button for one tick (`context.operator_abort`), and `{"operator": {"acknowledge": True}}` is the OK that allows a new takeoff. In between, `context.operator_abort_unacknowledged` is true and Safety blocks launch and tracking (contract section 7). Each starts with `BIRD_DEMO_INIT` (no bird at 0 ms), and its bird events reach the loop through CV (see "CV integration").
 - `tests/`: unit tests for `step()`, one end-to-end test per demo, tests of the `MissionStatus` records (the validation rules on every demo, and the launch phase), tests that run CV's own fixtures (the bird keeps its sample's time, the run ends when the fixture does, and Safety blocks launch and tracking while CV's input is missing or stale), and a test that Motion's records reach `motion_logger`.
 
 The run loop uses CV, which needs OpenCV and NumPy. Install them once from the repo root:

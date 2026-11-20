@@ -234,6 +234,7 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
     command_failure = None   # why Motion rejected the previous tick's command, or None; Safety aborts on it
     safety_events = []       # Safety's SafetyEvent for every tick: its answer plus every order it checked
     last_logged_safety = None  # the last SafetyEvent written to safety_logger, so unchanged ticks are skipped
+    operator_abort_unacknowledged = False  # an operator stop that hasn't been acknowledged yet (contract section 7)
     records = []
 
     # build the camera for the drone
@@ -252,9 +253,19 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
         current_time_ms = tick * TICK_MS
 
         # 1. Update what changes in the world at the specified time
+        # Operator events aren't world facts: {"operator": {"abort": True}} is a one-tick stop button
+        # press, and {"operator": {"acknowledge": True}} is the OK that allows a new takeoff
+        operator_abort = False
         for event_time_ms, observation in scenario:
             if current_time_ms == event_time_ms:
                 for section, values in observation.items():
+                    if section == "operator":
+                        if values.get("abort") is True:
+                            operator_abort = True
+                            operator_abort_unacknowledged = True
+                        if values.get("acknowledge") is True:
+                            operator_abort_unacknowledged = False
+                        continue
                     world[section].update(values)
 
         # 2. Run the state machine each tick using a snapshot of current situation
@@ -274,6 +285,8 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
             "launch_phase": current_launch_phase(launching, vehicle),  # so step() waits for the climb
             "pending_command_failure": command_failure,  # Safety aborts after a rejected command (contract section 6)
             "launch_started_ns": launch_started,  # for Safety's 10 s launch timeout
+            "operator_abort": operator_abort,  # True only on the tick the operator pressed stop; Safety aborts
+            "operator_abort_unacknowledged": operator_abort_unacknowledged,  # Safety blocks launch and tracking
         }
 
 

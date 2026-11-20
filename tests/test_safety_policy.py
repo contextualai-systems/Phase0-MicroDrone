@@ -459,3 +459,111 @@ class TestLaunchTimeoutInTheRunLoop(unittest.TestCase):
                 with mock.patch.object(run_loop, "assess", side_effect=listening_assess):
                     run_loop.run_world(duration_ms, scenario=scenario)
                 self.assertEqual(hits, [])
+
+
+class TestOperatorAbortUnacknowledged(unittest.TestCase):
+    """After an operator stop, go home and stay home until someone says OK
+    (INTEGRATION_README.md section 7)."""
+
+    def waiting_for_ok(self, flight_active=True, **context):
+        snap = snapshot(flight_active=flight_active)
+        snap["context"]["operator_abort_unacknowledged"] = True
+        snap["context"].update(context)
+        return assess(snap, NOW)
+
+    def test_blocks_launch_and_tracking(self):
+        for flight_active in (True, False):
+            with self.subTest(flight_active=flight_active):
+                result = self.waiting_for_ok(flight_active)
+                self.assertFalse(result.allows("launch"))
+                self.assertFalse(result.allows("tracking"))
+                self.assertIn("operator_abort_unacknowledged", result.reasons)
+
+    def test_coming_home_and_landing_stay_allowed(self):
+        result = self.waiting_for_ok()
+        for action in ("approach", "descent", "hold"):
+            self.assertTrue(result.allows(action), action)
+        self.assertFalse(result.abort)       # the abort itself is only the stop tick
+        self.assertFalse(result.emergency)
+
+    def test_stop_tick_aborts_and_starts_the_wait(self):
+        result = self.waiting_for_ok(operator_abort=True)
+        self.assertTrue(result.abort)
+        self.assertIn("operator_abort", result.reasons)
+        self.assertIn("operator_abort_unacknowledged", result.reasons)
+
+    def test_acknowledged_or_missing_has_no_effect(self):
+        for value in (False, None):
+            with self.subTest(value=value):
+                result = self.waiting_for_ok(operator_abort_unacknowledged=value)
+                self.assertTrue(result.allows("launch"))
+                self.assertNotIn("operator_abort_unacknowledged", result.reasons)
+        snap = snapshot()
+        snap["context"].pop("operator_abort_unacknowledged", None)
+        self.assertTrue(assess(snap, NOW).allows("tracking"))
+
+
+class TestOperatorAbortInTheRunLoop(unittest.TestCase):
+    """End to end through the real coordinator loop."""
+
+    BIRD = {"detected": True, "type": "hawk", "distance_m": 20.0}
+
+    def fly(self, scenario, duration_ms=60000):
+        from state_machine.run_loop import run_world
+        return run_world(duration_ms, scenario=scenario)
+
+    def moves(self, result):
+        return [(t[0], t[1], t[2]) for t in result["transitions"]]
+
+    def test_stop_mid_flight_comes_home_and_waits_for_ok(self):
+        from state_machine.state_machine import State
+
+        result = self.fly([
+            (500, {"bird": self.BIRD}),
+            (5000, {"operator": {"abort": True}}),
+            (40000, {"operator": {"acknowledge": True}}),
+        ])
+        moves = self.moves(result)
+        self.assertIn((5000, State.TRACKING, State.ABORT), moves)
+        self.assertIn(State.DOCKED, [m[2] for m in moves])
+        # Never back to tracking until the OK, even though the bird is still there.
+        after_stop = [m for m in moves if 5000 < m[0] < 40000]
+        self.assertNotIn(State.TRACKING, [m[2] for m in after_stop])
+        self.assertNotIn(State.HOVERING, [m[2] for m in after_stop])
+        # The OK allows a new takeoff straight away.
+        self.assertIn((40000, State.IDLE, State.HOVERING), moves)
+
+    def test_no_ok_means_no_new_takeoff(self):
+        from state_machine.state_machine import State
+
+        result = self.fly([(500, {"bird": self.BIRD}), (5000, {"operator": {"abort": True}})])
+        launches = [m for m in self.moves(result) if m[2] == State.HOVERING and m[1] == State.IDLE]
+        self.assertEqual([m[0] for m in launches], [500])
+        self.assertEqual(result["statuses"][-1].state, State.IDLE)
+
+    def test_stop_on_the_ground_blocks_the_first_takeoff(self):
+        from state_machine.state_machine import State
+
+        result = self.fly([
+            (0, {"operator": {"abort": True}}),
+            (500, {"bird": self.BIRD}),
+            (3000, {"operator": {"acknowledge": True}}),
+        ], duration_ms=5000)
+        launches = [m for m in self.moves(result) if m[2] == State.HOVERING]
+        self.assertEqual([m[0] for m in launches], [3000])
+
+    def test_the_stop_is_one_tick_not_a_held_button(self):
+        """Safety's abort reason appears on the stop tick only."""
+        result = self.fly([(500, {"bird": self.BIRD}), (5000, {"operator": {"abort": True}})],
+                          duration_ms=8000)
+        abort_ticks = [e.timestamp_ns // 1_000_000 for e in result["safety_events"]
+                       if "operator_abort" in e.reasons]
+        self.assertEqual(abort_ticks, [5000])
+
+    def test_scenarios_without_operator_events_are_unchanged(self):
+        from state_machine.demos import DEMOS
+        for name, (scenario, duration_ms) in DEMOS.items():
+            with self.subTest(demo=name):
+                for event in self.fly(scenario, duration_ms)["safety_events"]:
+                    self.assertNotIn("operator_abort_unacknowledged", event.reasons)
+                    self.assertNotIn("operator_abort", event.reasons)
