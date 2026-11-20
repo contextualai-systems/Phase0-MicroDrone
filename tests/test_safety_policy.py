@@ -322,3 +322,248 @@ class TestLaunchInTheRunLoop(unittest.TestCase):
         self.assertEqual(launches[0][0], 2000)  # took off the moment the storm cleared
         # It never had to emergency-land.
         self.assertNotIn(State.EMERGENCY_LAND, [t[2] for t in result["transitions"]])
+
+
+class TestLaunchTimeout(unittest.TestCase):
+    """The takeoff climb has 10 seconds. After that, abort and come home."""
+
+    def launching(self, seconds_ago, phase="climbing", **context):
+        snap = snapshot()  # in the air, everything else fine
+        snap["context"]["launch_phase"] = phase
+        snap["context"]["launch_started_ns"] = (
+            None if seconds_ago is None else NOW - int(seconds_ago * config.NS_PER_S)
+        )
+        snap["context"].update(context)
+        return assess(snap, NOW)
+
+    def test_under_10_seconds_is_fine(self):
+        result = self.launching(9.9)
+        self.assertFalse(result.abort)
+        self.assertNotIn("launch_timeout", result.reasons)
+
+    def test_exactly_10_seconds_aborts(self):
+        """Timers go off at the limit, not just after it."""
+        result = self.launching(10)
+        self.assertTrue(result.abort)
+        self.assertIn("launch_timeout", result.reasons)
+
+    def test_abort_is_not_an_emergency(self):
+        """The drone can still hold and come home; it doesn't land in place."""
+        result = self.launching(12)
+        self.assertFalse(result.emergency)
+        self.assertTrue(result.allows("hold"))
+        for action in ("launch", "tracking", "approach", "descent"):
+            self.assertFalse(result.allows(action), action)
+
+    def test_arming_counts_as_launching(self):
+        self.assertTrue(self.launching(10, phase="arming").abort)
+
+    def test_finished_climb_cancels_the_timer(self):
+        """An old launch timer must never abort a later trip home."""
+        for phase in ("complete", "none", None):
+            with self.subTest(phase=phase):
+                result = self.launching(30, phase=phase)
+                self.assertFalse(result.abort)
+                self.assertNotIn("launch_timeout", result.reasons)
+
+    def test_no_timer_or_broken_timer_is_ignored(self):
+        self.assertFalse(self.launching(None).abort)
+        self.assertFalse(self.launching(-5).abort)  # start time in the future
+        snap = snapshot()
+        snap["context"].update(launch_phase="climbing", launch_started_ns=True)
+        self.assertFalse(assess(snap, NOW).abort)
+
+    def test_no_timer_field_is_fine(self):
+        """Older code that doesn't send the timer shouldn't cause aborts."""
+        snap = snapshot()
+        snap["context"]["launch_phase"] = "climbing"
+        snap["context"].pop("launch_started_ns", None)
+        self.assertFalse(assess(snap, NOW).abort)
+
+    def test_emergency_wins_over_launch_timeout(self):
+        snap = snapshot(battery={"percent": 5.0})
+        snap["context"].update(
+            launch_phase="climbing", launch_started_ns=NOW - 12 * config.NS_PER_S
+        )
+        result = assess(snap, NOW)
+        self.assertTrue(result.emergency)
+        self.assertNotIn("launch_timeout", result.reasons)
+
+
+class TestLaunchTimeoutInTheRunLoop(unittest.TestCase):
+    """End to end: weak motors that can't finish the climb in time."""
+
+    BIRD_AT_START = [(0, {"bird": {"detected": True, "type": "hawk", "distance_m": 20.0}})]
+
+    def run_with_climb_speed(self, climb_mps, duration_ms):
+        import dataclasses
+        from unittest import mock
+
+        import state_machine.run_loop as run_loop
+
+        real_limits = run_loop.MotionLimits.from_config
+        real_assess = run_loop.assess
+        seen = []  # (time_ms, reasons) for every tick Safety ran
+
+        def weak_motors(*args, **kwargs):
+            return dataclasses.replace(
+                real_limits(*args, **kwargs), max_vertical_speed_mps=climb_mps
+            )
+
+        def listening_assess(snap, now_ns):
+            result = real_assess(snap, now_ns)
+            seen.append((now_ns // 1_000_000, result.reasons))
+            return result
+
+        with mock.patch.object(run_loop.MotionLimits, "from_config", side_effect=weak_motors), \
+                mock.patch.object(run_loop, "assess", side_effect=listening_assess):
+            result = run_loop.run_world(duration_ms, scenario=self.BIRD_AT_START)
+        return result, seen
+
+    def test_stuck_climb_aborts_at_10_seconds_and_lands_on_the_pad(self):
+        from state_machine.state_machine import State
+
+        # 0.3 m/s needs about 17 s to reach the 5 m launch altitude.
+        result, seen = self.run_with_climb_speed(0.3, 34000)
+        transitions = [(t[0], t[1], t[2]) for t in result["transitions"]]
+        self.assertEqual(transitions[0], (0, State.IDLE, State.HOVERING))
+        self.assertEqual(transitions[1], (10000, State.HOVERING, State.ABORT))
+        self.assertIn((10100, State.ABORT, State.DOCKING_INIT), transitions)
+        self.assertIn(State.DOCKED, [t[2] for t in transitions])
+        self.assertNotIn(State.EMERGENCY_LAND, [t[2] for t in transitions])
+
+        timeout_ticks = [t for t, reasons in seen if "launch_timeout" in reasons]
+        self.assertEqual(timeout_ticks, [10000])  # once, then the timer is cancelled
+
+    def test_normal_climb_never_times_out(self):
+        result, seen = self.run_with_climb_speed(2.0, 12000)
+        self.assertFalse(any("launch_timeout" in reasons for _, reasons in seen))
+
+    def test_no_demo_ever_hits_the_launch_timeout(self):
+        from unittest import mock
+
+        import state_machine.run_loop as run_loop
+        from state_machine.demos import DEMOS
+
+        real_assess = run_loop.assess
+        for name, (scenario, duration_ms) in DEMOS.items():
+            with self.subTest(demo=name):
+                hits = []
+
+                def listening_assess(snap, now_ns):
+                    result = real_assess(snap, now_ns)
+                    if "launch_timeout" in result.reasons:
+                        hits.append(now_ns)
+                    return result
+
+                with mock.patch.object(run_loop, "assess", side_effect=listening_assess):
+                    run_loop.run_world(duration_ms, scenario=scenario)
+                self.assertEqual(hits, [])
+
+
+class TestOperatorAbortUnacknowledged(unittest.TestCase):
+    """After an operator stop, go home and stay home until someone says OK
+    (INTEGRATION_README.md section 7)."""
+
+    def waiting_for_ok(self, flight_active=True, **context):
+        snap = snapshot(flight_active=flight_active)
+        snap["context"]["operator_abort_unacknowledged"] = True
+        snap["context"].update(context)
+        return assess(snap, NOW)
+
+    def test_blocks_launch_and_tracking(self):
+        for flight_active in (True, False):
+            with self.subTest(flight_active=flight_active):
+                result = self.waiting_for_ok(flight_active)
+                self.assertFalse(result.allows("launch"))
+                self.assertFalse(result.allows("tracking"))
+                self.assertIn("operator_abort_unacknowledged", result.reasons)
+
+    def test_coming_home_and_landing_stay_allowed(self):
+        result = self.waiting_for_ok()
+        for action in ("approach", "descent", "hold"):
+            self.assertTrue(result.allows(action), action)
+        self.assertFalse(result.abort)       # the abort itself is only the stop tick
+        self.assertFalse(result.emergency)
+
+    def test_stop_tick_aborts_and_starts_the_wait(self):
+        result = self.waiting_for_ok(operator_abort=True)
+        self.assertTrue(result.abort)
+        self.assertIn("operator_abort", result.reasons)
+        self.assertIn("operator_abort_unacknowledged", result.reasons)
+
+    def test_acknowledged_or_missing_has_no_effect(self):
+        for value in (False, None):
+            with self.subTest(value=value):
+                result = self.waiting_for_ok(operator_abort_unacknowledged=value)
+                self.assertTrue(result.allows("launch"))
+                self.assertNotIn("operator_abort_unacknowledged", result.reasons)
+        snap = snapshot()
+        snap["context"].pop("operator_abort_unacknowledged", None)
+        self.assertTrue(assess(snap, NOW).allows("tracking"))
+
+
+class TestOperatorAbortInTheRunLoop(unittest.TestCase):
+    """End to end through the real coordinator loop."""
+
+    BIRD = {"detected": True, "type": "hawk", "distance_m": 20.0}
+
+    def fly(self, scenario, duration_ms=60000):
+        from state_machine.run_loop import run_world
+        return run_world(duration_ms, scenario=scenario)
+
+    def moves(self, result):
+        return [(t[0], t[1], t[2]) for t in result["transitions"]]
+
+    def test_stop_mid_flight_comes_home_and_waits_for_ok(self):
+        from state_machine.state_machine import State
+
+        result = self.fly([
+            (500, {"bird": self.BIRD}),
+            (5000, {"operator": {"abort": True}}),
+            (40000, {"operator": {"acknowledge": True}}),
+        ])
+        moves = self.moves(result)
+        self.assertIn((5000, State.TRACKING, State.ABORT), moves)
+        self.assertIn(State.DOCKED, [m[2] for m in moves])
+        # Never back to tracking until the OK, even though the bird is still there.
+        after_stop = [m for m in moves if 5000 < m[0] < 40000]
+        self.assertNotIn(State.TRACKING, [m[2] for m in after_stop])
+        self.assertNotIn(State.HOVERING, [m[2] for m in after_stop])
+        # The OK allows a new takeoff straight away.
+        self.assertIn((40000, State.IDLE, State.HOVERING), moves)
+
+    def test_no_ok_means_no_new_takeoff(self):
+        from state_machine.state_machine import State
+
+        result = self.fly([(500, {"bird": self.BIRD}), (5000, {"operator": {"abort": True}})])
+        launches = [m for m in self.moves(result) if m[2] == State.HOVERING and m[1] == State.IDLE]
+        self.assertEqual([m[0] for m in launches], [500])
+        self.assertEqual(result["statuses"][-1].state, State.IDLE)
+
+    def test_stop_on_the_ground_blocks_the_first_takeoff(self):
+        from state_machine.state_machine import State
+
+        result = self.fly([
+            (0, {"operator": {"abort": True}}),
+            (500, {"bird": self.BIRD}),
+            (3000, {"operator": {"acknowledge": True}}),
+        ], duration_ms=5000)
+        launches = [m for m in self.moves(result) if m[2] == State.HOVERING]
+        self.assertEqual([m[0] for m in launches], [3000])
+
+    def test_the_stop_is_one_tick_not_a_held_button(self):
+        """Safety's abort reason appears on the stop tick only."""
+        result = self.fly([(500, {"bird": self.BIRD}), (5000, {"operator": {"abort": True}})],
+                          duration_ms=8000)
+        abort_ticks = [e.timestamp_ns // 1_000_000 for e in result["safety_events"]
+                       if "operator_abort" in e.reasons]
+        self.assertEqual(abort_ticks, [5000])
+
+    def test_scenarios_without_operator_events_are_unchanged(self):
+        from state_machine.demos import DEMOS
+        for name, (scenario, duration_ms) in DEMOS.items():
+            with self.subTest(demo=name):
+                for event in self.fly(scenario, duration_ms)["safety_events"]:
+                    self.assertNotIn("operator_abort_unacknowledged", event.reasons)
+                    self.assertNotIn("operator_abort", event.reasons)

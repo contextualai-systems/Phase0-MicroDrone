@@ -37,6 +37,14 @@ it anyway). If an order already *is* the emergency response — an
 `EMERGENCY_LAND` in the air, or a `DISARM` on the ground — it passes through
 unchanged instead of being swapped for an identical copy.
 
+What the order check looks at, in order: is it well formed (Motion's own
+`validate()`), has it expired, is its kind of action permitted right now, is
+its destination inside the geofence and under the ceiling, are its speed caps
+no higher than our limits, and — for `SET_VELOCITY` — is the speed itself
+within limits (sideways 5 m/s, up/down 2 m/s, spin 90 °/s, or the order's own
+lower cap). The speed rule is the same one Motion uses, and a test checks
+that the two always agree.
+
 ## How decisions are made
 
 First level that applies wins:
@@ -45,7 +53,13 @@ First level that applies wins:
    lost signal, bad weather, or a trip home that has run 60 s or more
    (`context.return_started_ns`, kept through retries) → land in place,
    replace any order.
-2. **Abort** — operator stop or rejected command → cancel target; hold still allowed.
+2. **Abort** — operator stop, rejected command, or a takeoff climb still
+   going 10 s after launch (`launch_timeout`) → cancel target; hold still
+   allowed. The launch timer (`context.launch_started_ns`) only counts while
+   `context.launch_phase` is `climbing`, so it can never abort a later trip
+   home. Docking's own timeouts (30 s per attempt, 5 s search) abort through
+   Docking's `abort` phase instead, and the 60 s return deadline caps the
+   whole trip home.
 3. **Restrictions** — block only what the hazard affects:
 
    | Hazard | Blocks |
@@ -56,6 +70,15 @@ First level that applies wins:
    | Missing pad data | approach, descent |
    | Bad alignment | descent |
    | Unknown position | everything |
+   | Operator stop not yet acknowledged | launch, tracking |
+
+   The operator stop itself (`context.operator_abort`) is a one-tick abort.
+   Until it is acknowledged (`context.operator_abort_unacknowledged`), launch
+   and tracking stay blocked with `operator_abort_unacknowledged`, so the
+   drone comes home, lands, and doesn't take off again (contract section 7:
+   "requires an explicit acknowledgement before a grounded restart"). Docking
+   turns the blocked tracking into a return request, the same way it does for
+   low battery.
 
 4. **Launch checks** (on the ground only) — takeoff also needs:
 
@@ -102,7 +125,7 @@ whether to return; Safety decides whether returning is permitted.
 `SafetyEvent` ([`contracts.py`](contracts.py)) is Safety's report for one tick:
 what the drone may do, what Safety did with each order, and why. It is one of
 the six shared formats for Phase 0, next to Motion's `Command` and
-`VehicleFeedback`, CV's `DetectionResult` and the state machine's
+`DroneState`, CV's `DetectionResult` and the state machine's
 `MissionStatus`. It records decisions; it never makes them.
 
 This is a draft. Field names need team agreement.
@@ -117,7 +140,15 @@ and so a run can be reconstructed later from the log.
 
 - **Publisher:** Safety. The coordinator (`run_loop.py`) builds it each tick
   with `SafetyEvent.from_checks(assessment, [(order, decision), ...])` after
-  calling `assess()` and `check_command()`.
+  calling `assess()` and `check_command()`. Every tick's event is in
+  `run_world(...)["safety_events"]`.
+- **Shared log:** `run_world(..., safety_logger=UniversalLogSink())` writes
+  events as `module="safety"`, `event="safety_event"`, with the event's
+  `to_dict()` as `fields`. Running `python -m state_machine.run_loop` does
+  this unless you pass `--no-log`. `SafetyEvent.worth_logging()` decides
+  which ticks are written: the first tick, every tick where an order was
+  replaced, and every tick where Safety's answer changed (contract section
+  10: log every override; unchanged holds may be summarized).
 - **Subscribers:** the shared log (`universal_log`), the state machine and
   Docking (which already read the same permissions from `SafetyAssessment`),
   and tests.
@@ -202,18 +233,16 @@ state machine's hover goes through.
 
 ### Open questions
 
-- Should the coordinator log an event every tick, or only when something
-  changes? Every tick is complete but long.
+- None right now.
 
 ## Not done yet
 
-- **Field names unconfirmed** — taken from Integration README Section 4; the
-  shared contracts module doesn't exist. Wrong names mean `assess()` reads empty
-  sections and blocks everything. Needs the state machine team to confirm.
-- Launch and docking timeouts need coordinator-tracked time. (The 60 s return
-  deadline is done.)
-- Logging not wired up: `SafetyEvent` is ready, but `run_loop.py` doesn't
-  build one yet.
-- An emergency or abort on the ground still sends hover/land instead of
-  turning the motors off (DISARM).
-- Weather words are a guess; needs the simulation team to confirm.
+- A drone whose climb keeps timing out will land, recharge and try again,
+  over and over. A limit on repeated failed launches (or requiring a reset
+  first) would need the state machine team.
+- Weather words are a guess (`clear` and `cloudy` are safe). The demos only
+  send `clear` and `storm`; needs the simulation team to confirm the full list.
+- The `vehicle` section now matches Motion's `DroneState` contract
+  (`motion_engine/contracts.py`). The other sections (`battery`,
+  `environment`, `dock`, `context`) still come from the run loop directly and
+  have no shared contract yet.

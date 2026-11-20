@@ -75,7 +75,7 @@ What `step()` receives on one tick of the `full_cycle` demo (5000 ms: low batter
 | `bird` | CV's latest sample (`ComputerVision.read_due()`), with the sample's own `timestamp_ns` (see "CV integration") |
 | `battery`, `environment`, `dock` | The demo scenario (`demos.py`), stamped with the current time. `environment.camera_ok` is also false while CV's input is missing or stale (see "CV integration"). `dock.pad_pose` is the fixed pad (`PAD` in `run_loop.py`). |
 | `vehicle` | Motion's feedback from the previous tick (`VehicleFeedback.to_dict()`) |
-| `context` | `run_loop.py`: `flight_active` is true while the drone is armed or airborne; `return_started_ns` is the return latch (see "Docking integration"); `launch_phase` is the launch progress from the previous tick (see "MissionStatus") |
+| `context` | `run_loop.py`: `flight_active` is true while the drone is armed or airborne; `return_started_ns` is the return latch (see "Docking integration"); `launch_phase` is the launch progress from the previous tick (see "MissionStatus"); `launch_started_ns` is when the current launch began, or null outside a launch |
 | `safety` | Safety's `assess()`, worked out from the sections above |
 | `docking` | Docking's controller (`DockingUpdate.to_dict()`). Its `reasons` are why it wants to return; its `reason` is why its phase changed |
 
@@ -191,7 +191,7 @@ Be able to, in a running simulation, test each of these values changing.
 
 `run_loop.py` asks Safety what is allowed every tick, before `step()`:
 
-1. It builds the snapshot: the scenario's `battery`, `environment` and `dock` facts, each stamped with the current time; Motion's feedback as `vehicle`; and `context` with `flight_active`, `return_started_ns`, `launch_phase` and `pending_command_failure`.
+1. It builds the snapshot: the scenario's `battery`, `environment` and `dock` facts, each stamped with the current time; Motion's feedback as `vehicle`; and `context` with `flight_active`, `return_started_ns`, `launch_phase`, `pending_command_failure` and `launch_started_ns`.
 2. It calls Safety's `assess(snapshot, now_ns)` ([`safety_layer/safety_policy.py`](../safety_layer/safety_policy.py)) and puts the answer in `snapshot["safety"]`, where `step()` reads it.
 
 Safety fails closed: a missing section, or one older than 0.5 s, counts as not permitted. Its emergency rules (critical battery, lost comms, bad weather, stale data) only apply while `flight_active` is true.
@@ -200,7 +200,9 @@ Safety fails closed: a missing section, or one older than 0.5 s, counts as not p
 
 `context.pending_command_failure` is Motion's reason when it rejected the previous tick's command, or null. Safety turns it into an abort (`command_rejected`), and the mission goes to `ABORT` and recovers from there (contract sections 4 and 6). It clears on the next tick Motion accepts a command, or when no new command is sent.
 
-Every command then passes through `check_for_motion()` ([`motion_engine/safety_adapter.py`](../motion_engine/safety_adapter.py)) before it reaches Motion. If Safety does not permit it, Safety sends a replacement instead: `HOVER`, `LAND` if holding is not permitted either, or `EMERGENCY_LAND` during an emergency. A replacement's command id ends in `-safety`.
+`context.launch_started_ns` is for Safety's 10 s launch timeout (same sections). It is set when the drone launches and cleared when the mission leaves `HOVERING`. Safety only counts it while `launch_phase` is `climbing`, so a finished climb, or an old launch, can never abort a later return. If the climb hasn't finished after 10 s, Safety calls an abort and the mission goes `HOVERING → ABORT → DOCKING_INIT`.
+
+Every command then passes through `check_for_motion()` ([`motion_engine/safety_adapter.py`](../motion_engine/safety_adapter.py)) before it reaches Motion. If Safety does not permit it, Safety sends a replacement instead: `HOVER`, `LAND` if holding is not permitted either, or `EMERGENCY_LAND` during an emergency. On the ground the replacement is `DISARM`. A replacement's command id ends in `-safety`.
 
 ## CV integration
 
@@ -261,7 +263,6 @@ Nothing is sent while the takeoff is still climbing, because a new command would
 Not connected yet:
 
 - `TRACKING` sends no command, because there is no Navigation target yet.
-- `context` has no `operator_abort`, because the scenarios have no operator events yet. Safety already aborts on it.
 - A rejected `ARM` or `TAKEOFF` still stops the run with an error instead of going to Safety. Only the per-tick commands report `pending_command_failure`.
 
 ## MissionStatus
@@ -365,7 +366,7 @@ Code lives in this folder:
 - `state_machine.py`: the `State` enum and `step()`.
 - `run_loop.py`: the 10 Hz synthetic loop. It runs a scripted demo through `step()`, sends the matching commands to Motion, and builds a `MissionStatus` every tick.
 - `contracts.py`: `MissionStatus`, the mission's status for one tick (see "MissionStatus").
-- `demos.py`: the scripted demo scenarios. They script facts about the world (bird, battery, cart, people, comms, pad alignment), not Safety's or Docking's answers. Each starts with `BIRD_DEMO_INIT` (no bird at 0 ms), and its bird events reach the loop through CV (see "CV integration").
+- `demos.py`: the scripted demo scenarios. They script facts about the world (bird, battery, cart, people, comms, pad alignment), not Safety's or Docking's answers. A scenario can also script operator events: `{"operator": {"abort": True}}` presses the stop button for one tick (`context.operator_abort`), and `{"operator": {"acknowledge": True}}` is the OK that allows a new takeoff. In between, `context.operator_abort_unacknowledged` is true and Safety blocks launch and tracking (contract section 7). Each starts with `BIRD_DEMO_INIT` (no bird at 0 ms), and its bird events reach the loop through CV (see "CV integration").
 - `tests/`: unit tests for `step()`, one end-to-end test per demo, tests of the `MissionStatus` records (the validation rules on every demo, and the launch phase), tests that run CV's own fixtures (the bird keeps its sample's time, the run ends when the fixture does, and Safety blocks launch and tracking while CV's input is missing or stale), and a test that Motion's records reach `motion_logger`.
 
 The run loop uses CV, which needs OpenCV and NumPy. Install them once from the repo root:
@@ -410,3 +411,6 @@ The tests call `run_world()` without real-time pacing or logging, so they finish
 - `commands`: `(time_ms, kind, accepted, reason)` for each new command sent to Motion. A renewed command is listed once.
 - `vehicle`: Motion's feedback after the last tick (`grounded`, `armed`, `airborne`, `pose`, …).
 - `statuses`: one `MissionStatus` per tick (see "MissionStatus").
+- `safety_events`: one `SafetyEvent` per tick: Safety's answer and every order it checked that tick ([safety README](../safety_layer/README.md#safetyevent)).
+
+Pass `safety_logger=UniversalLogSink()` to also write Safety's events to the shared log (only ticks where Safety's answer changed or an order was replaced). `python -m state_machine.run_loop` does this unless `--no-log` is given.

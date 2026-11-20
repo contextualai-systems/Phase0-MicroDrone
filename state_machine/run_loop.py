@@ -9,6 +9,7 @@ from safety_layer.config import MAX_OBSERVATION_AGE_S, NS_PER_S
 from state_machine.contracts import MissionStatus
 from state_machine.demos import DEMO_SCENARIO, DEMOS, BIRD_GONE
 from safety_layer.safety_policy import assess
+from safety_layer.contracts import SafetyEvent
 from state_machine.state_machine import State, step
 from universal_log.Universal_log import UniversalLog
 from motion_engine.contracts import Command, MotionCommandType, Pose, SimulationClock
@@ -84,7 +85,7 @@ def init_world() -> dict:
 
 # Arm and take off. Called once, when the mission goes IDLE -> HOVERING.
 # Motion rejects a reused command id, so each launch gets its own number.
-def launch_drone(motion, clock, state, reason, launch_number, assessment):
+def launch_drone(motion, clock, state, reason, launch_number, assessment, checks=None):
     now = clock.timestamp_ns
     commands = [
         Command(f"arm-{launch_number}", MotionCommandType.ARM, state.value, now, None, "state_machine", reason),
@@ -93,7 +94,10 @@ def launch_drone(motion, clock, state, reason, launch_number, assessment):
     ]
     acks = []
     for command in commands:
+        requested = command
         command, decision = check_for_motion(command, assessment, now)
+        if checks is not None:
+            checks.append((requested, decision))  # for this tick's Safety log entry
         ack = motion.submit(command, now)
         if not ack.accepted:
             raise RuntimeError(f"Motion rejected {command.command_id}: {ack.reason}")
@@ -171,7 +175,7 @@ def wanted_command(state, vehicle, proposal=None):
 # Send the wanted command to Motion, or renew it if it is the same one as last tick.
 # active remembers the last command: {"number": int, "kind": ..., "target": ...}.
 # Returns Motion's ack, or None when nothing was sent.
-def send_command(motion, clock, active, state, reason, wanted, assessment):
+def send_command(motion, clock, active, state, reason, wanted, assessment, checks=None):
     if wanted is None:
         # Forget the last command: Motion rejects an id that is reused after it expired
         active["kind"], active["target"] = None, None
@@ -188,7 +192,10 @@ def send_command(motion, clock, active, state, reason, wanted, assessment):
     expires = None if kind in ONE_SHOT_KINDS else now + VALIDITY_NS
     command = Command(f"sm-{active['number']}", kind, state.value, now, expires,
                       "state_machine", reason or "renew", target=target)
+    requested = command
     command, decision = check_for_motion(command, assessment, now)
+    if checks is not None:
+        checks.append((requested, decision))  # for this tick's Safety log entry
     ack = motion.submit(command, now)
     if ack.accepted:
         active["kind"], active["target"] = kind, target
@@ -202,7 +209,8 @@ def send_command(motion, clock, active, state, reason, wanted, assessment):
 # camera_fixture: the path to one of CV's own fixture files (such as cv/scenarios/integration_cycle.json).
 # The bird then comes from that file as it is; without it, the bird comes from the scenario's bird events.
 def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool = False,
-              scenario: list = DEMO_SCENARIO, viewPosition: bool = False, camera_fixture: str | None = None, motion_logger=None):
+              scenario: list = DEMO_SCENARIO, viewPosition: bool = False, camera_fixture: str | None = None, motion_logger=None,
+              safety_logger=None):
     world = init_world()
     currState = State.IDLE
     clock = SimulationClock()
@@ -215,6 +223,7 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
     return_started = None    # the return latch: when the mission first committed to returning home
     return_reason = None      # why the return started, or None if no return has started
     launching = False         # True from the launch (IDLE -> HOVERING) until the mission leaves HOVERING
+    launch_started = None     # when the current launch began, for Safety's 10 s launch timeout
     state_entered = 0         # when the current state was entered; the mission starts in IDLE at time 0
     active = {"number": 0, "kind": None, "target": None}  # the last command sent to Motion
     vehicle = motion.feedback(clock.timestamp_ns)          # Motion's feedback from the previous tick
@@ -223,6 +232,9 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
     commands = []            # every new command sent to Motion: (time_ms, kind, accepted, reason)
     last_command_id = None   # so a command renewed every tick is only recorded once
     command_failure = None   # why Motion rejected the previous tick's command, or None; Safety aborts on it
+    safety_events = []       # Safety's SafetyEvent for every tick: its answer plus every order it checked
+    last_logged_safety = None  # the last SafetyEvent written to safety_logger, so unchanged ticks are skipped
+    operator_abort_unacknowledged = False  # an operator stop that hasn't been acknowledged yet (contract section 7)
     records = []
 
     # build the camera for the drone
@@ -241,9 +253,19 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
         current_time_ms = tick * TICK_MS
 
         # 1. Update what changes in the world at the specified time
+        # Operator events aren't world facts: {"operator": {"abort": True}} is a one-tick stop button
+        # press, and {"operator": {"acknowledge": True}} is the OK that allows a new takeoff
+        operator_abort = False
         for event_time_ms, observation in scenario:
             if current_time_ms == event_time_ms:
                 for section, values in observation.items():
+                    if section == "operator":
+                        if values.get("abort") is True:
+                            operator_abort = True
+                            operator_abort_unacknowledged = True
+                        if values.get("acknowledge") is True:
+                            operator_abort_unacknowledged = False
+                        continue
                     world[section].update(values)
 
         # 2. Run the state machine each tick using a snapshot of current situation
@@ -262,6 +284,9 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
             "return_started_ns": return_started,  # for Safety's 60 s return deadline
             "launch_phase": current_launch_phase(launching, vehicle),  # so step() waits for the climb
             "pending_command_failure": command_failure,  # Safety aborts after a rejected command (contract section 6)
+            "launch_started_ns": launch_started,  # for Safety's 10 s launch timeout
+            "operator_abort": operator_abort,  # True only on the tick the operator pressed stop; Safety aborts
+            "operator_abort_unacknowledged": operator_abort_unacknowledged,  # Safety blocks launch and tracking
         }
 
 
@@ -336,22 +361,35 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
             return_started = None
             return_reason = None
 
+        safety_checks = []  # every order Safety checked this tick, for its log entry
+
         # When the drone launches (IDLE -> HOVERING), arm and take off once
         if currState == State.IDLE and newState == State.HOVERING:
             launches += 1
             launching = True
-            for ack in launch_drone(motion, clock, newState, reason, launches, assessment):
+            launch_started = now_ns
+            for ack in launch_drone(motion, clock, newState, reason, launches, assessment, safety_checks):
                 commands.append((current_time_ms, ack.kind, ack.accepted, ack.reason))
             vehicle = motion.feedback(clock.timestamp_ns)  # so the takeoff shows as the active command
         elif newState != State.HOVERING:
             launching = False  # leaving HOVERING ends the launch, even if the climb hadn't finished
+            launch_started = None  # and cancels its timeout, so it can't abort a later return
 
         # Send (or renew) the command this state wants, before Motion moves this tick
-        ack = send_command(motion, clock, active, newState, reason, wanted_command(newState, vehicle, dockUpdate.proposed_target), assessment)
+        ack = send_command(motion, clock, active, newState, reason, wanted_command(newState, vehicle, dockUpdate.proposed_target), assessment, safety_checks)
         if ack is not None and ack.command_id != last_command_id:
             commands.append((current_time_ms, ack.kind, ack.accepted, ack.reason))
             last_command_id = ack.command_id
         command_failure = None if ack is None or ack.accepted else ack.reason  # Safety reads it next tick
+
+        # Safety's record of this tick: what it allowed, why, and every order it replaced
+        # (INTEGRATION_README.md section 10). Logged when the answer changes or an order is replaced.
+        safety_event = SafetyEvent.from_checks(assessment, safety_checks)
+        safety_events.append(safety_event)
+        if safety_logger is not None and safety_event.worth_logging(last_logged_safety):
+            safety_logger.log("safety", "safety_event", fields=safety_event.to_dict(),
+                              state=newState.value, t=clock())
+            last_logged_safety = safety_event
 
         # Every tick: move the simulated drone, then read where it is
         motion.step(TICK_MS / 1000, now_ns=clock.timestamp_ns)
@@ -419,6 +457,7 @@ def run_world(duration_ms: int, real_time: bool = False, log_transitions: bool =
         "commands": commands,        # (time_ms, kind, accepted, reason) for each new command sent to Motion
         "vehicle": vehicle,          # Motion's feedback after the last tick: pose, armed, airborne, grounded, ...
         "statuses": statuses,        # every tick's MissionStatus, for debugging and testing
+        "safety_events": safety_events,  # every tick's SafetyEvent: Safety's answer and the orders it checked
     }
 
 if __name__ == "__main__":
@@ -431,8 +470,10 @@ if __name__ == "__main__":
 
     log_transitions = not args.no_log
     motion_logger = None if args.no_log else UniversalLogSink()
+    safety_logger = None if args.no_log else UniversalLogSink()
     scenario, duration_ms = DEMOS[args.demo]
-    result = run_world(duration_ms, True, log_transitions, scenario, False, motion_logger=motion_logger)
+    result = run_world(duration_ms, True, log_transitions, scenario, False, motion_logger=motion_logger,
+                       safety_logger=safety_logger)
     for currentTimeMs, currState, newState, reason in result["transitions"]:
         print(f"({currentTimeMs}ms) {currState.value} -> {newState.value}: Reason: {reason}")
 

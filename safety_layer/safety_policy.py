@@ -76,19 +76,43 @@ def _fresh(section, now_ns) -> bool:
     return age_ns <= config.MAX_OBSERVATION_AGE_S * config.NS_PER_S
 
 
-def _return_deadline_passed(started_ns, now_ns) -> bool:
-    """Has the trip home been going for 60 seconds or more?
+def _timer_reached(started_ns, now_ns, limit_ns) -> bool:
+    """Has a timer that started at started_ns reached its limit?
 
-    started_ns is when the trip home began, or None if it hasn't.
-    The limit counts as reached at exactly 60 seconds, not just after it.
+    started_ns is None when the timer isn't running. The limit counts as
+    reached at exactly limit_ns, not just after it (Section 5: "Timers
+    trigger at or beyond their limit").
     """
-    # Not heading home, or the time isn't a proper whole number.
+    # Not running, or the time isn't a proper whole number.
     if not isinstance(started_ns, int) or isinstance(started_ns, bool):
         return False
     # A start time in the future is broken, so don't trust it.
     if started_ns > now_ns:
         return False
-    return now_ns - started_ns >= config.RETURN_DEADLINE_NS
+    return now_ns - started_ns >= limit_ns
+
+
+def _return_deadline_passed(started_ns, now_ns) -> bool:
+    """Has the trip home been going for 60 seconds or more?"""
+    return _timer_reached(started_ns, now_ns, config.RETURN_DEADLINE_NS)
+
+
+# Launch phases (from the run loop's MissionStatus) during which the takeoff
+# is still in progress. "complete" and "none" mean there's no launch to time.
+LAUNCH_IN_PROGRESS = ("arming", "climbing")
+
+
+def _launch_timed_out(context, now_ns) -> bool:
+    """Has the takeoff climb been going for 10 seconds or more?
+
+    Only counts while the launch is actually in progress. Once the climb
+    finishes, or the drone leaves the launch for any reason, the timer no
+    longer applies, so an old launch timer can never abort a later trip
+    home (Section 7).
+    """
+    if context.get("launch_phase") not in LAUNCH_IN_PROGRESS:
+        return False
+    return _timer_reached(context.get("launch_started_ns"), now_ns, config.LAUNCH_TIMEOUT_NS)
 
 
 def _on_pad(vehicle, dock) -> bool:
@@ -220,11 +244,25 @@ def assess(snapshot: dict, now_ns: int) -> SafetyAssessment:
             # The last order didn't go through, so stop and rethink.
             abort = True
             reasons.append("command_rejected")
-        # TODO: also abort on launch and docking timeouts, once we have timers.
+        if _launch_timed_out(context, now_ns):
+            # The takeoff climb is taking far too long: give up and come home.
+            abort = True
+            reasons.append("launch_timeout")
+        # Docking's own timeouts (30 s per attempt, 5 s search) live in
+        # docking_controller.py and abort through Docking's "abort" phase.
+        # Safety's 60 s return deadline above caps the whole trip home.
 
     # ---------- LEVEL 3: RESTRICTIONS ----------
     # Here we block only the actions each problem actually affects,
     # instead of shutting everything down.
+
+    if context.get("operator_abort_unacknowledged") is True:
+        # The operator stopped the mission and hasn't said OK yet (contract
+        # section 7). The stop itself is the one-tick "operator_abort" above;
+        # until it is acknowledged the drone goes home and stays home: no
+        # chasing birds, no new takeoff. Coming home and landing stay allowed.
+        blocked.update(("launch", "tracking"))
+        reasons.append("operator_abort_unacknowledged")
 
     if battery_low:
         # Not enough charge to fly around, but enough to come home and land.
