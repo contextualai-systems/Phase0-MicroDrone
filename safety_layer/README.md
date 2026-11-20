@@ -37,6 +37,14 @@ it anyway). If an order already *is* the emergency response — an
 `EMERGENCY_LAND` in the air, or a `DISARM` on the ground — it passes through
 unchanged instead of being swapped for an identical copy.
 
+What the order check looks at, in order: is it well formed (Motion's own
+`validate()`), has it expired, is its kind of action permitted right now, is
+its destination inside the geofence and under the ceiling, are its speed caps
+no higher than our limits, and — for `SET_VELOCITY` — is the speed itself
+within limits (sideways 5 m/s, up/down 2 m/s, spin 90 °/s, or the order's own
+lower cap). The speed rule is the same one Motion uses, and a test checks
+that the two always agree.
+
 ## How decisions are made
 
 First level that applies wins:
@@ -102,7 +110,7 @@ whether to return; Safety decides whether returning is permitted.
 `SafetyEvent` ([`contracts.py`](contracts.py)) is Safety's report for one tick:
 what the drone may do, what Safety did with each order, and why. It is one of
 the six shared formats for Phase 0, next to Motion's `Command` and
-`VehicleFeedback`, CV's `DetectionResult` and the state machine's
+`DroneState`, CV's `DetectionResult` and the state machine's
 `MissionStatus`. It records decisions; it never makes them.
 
 This is a draft. Field names need team agreement.
@@ -207,13 +215,13 @@ state machine's hover goes through.
 
 ## Not done yet
 
-- **Field names unconfirmed** — taken from Integration README Section 4; the
-  shared contracts module doesn't exist. Wrong names mean `assess()` reads empty
-  sections and blocks everything. Needs the state machine team to confirm.
 - Launch and docking timeouts need coordinator-tracked time. (The 60 s return
   deadline is done.)
 - Logging not wired up: `SafetyEvent` is ready, but `run_loop.py` doesn't
   build one yet.
-- An emergency or abort on the ground still sends hover/land instead of
-  turning the motors off (DISARM).
-- Weather words are a guess; needs the simulation team to confirm.
+- Weather words are a guess (`clear` and `cloudy` are safe). The demos only
+  send `clear` and `storm`; needs the simulation team to confirm the full list.
+- The `vehicle` section now matches Motion's `DroneState` contract
+  (`motion_engine/contracts.py`). The other sections (`battery`,
+  `environment`, `dock`, `context`) still come from the run loop directly and
+  have no shared contract yet.

@@ -40,6 +40,9 @@ KIND_TO_ACTION = {
     MotionCommandType.TAKEOFF: "launch",
     MotionCommandType.MOVE_TO: "tracking",
     MotionCommandType.TRACK_TARGET: "tracking",
+    # "Fly this way at this speed" is in-flight movement like MOVE_TO and
+    # TRACK_TARGET, so it answers to the same tracking rule.
+    MotionCommandType.SET_VELOCITY: "tracking",
     MotionCommandType.SET_YAW: "tracking",
     MotionCommandType.GOTO_DOCK_APPROACH: "approach",
     MotionCommandType.DESCEND_TO_DOCK: "descent",
@@ -49,14 +52,6 @@ KIND_TO_ACTION = {
     MotionCommandType.DISARM: "hold",
     MotionCommandType.EMERGENCY_LAND: "hold",
 }
-
-# "Fly this way at this speed" is in-flight movement like MOVE_TO and
-# TRACK_TARGET, so it answers to the same tracking rule.
-# TODO: once Motion PR #93 is merged, move this into the table above and drop
-#       the hasattr checks here and in _safety_command. They only exist so
-#       this file works whichever PR merges first.
-if hasattr(MotionCommandType, "SET_VELOCITY"):
-    KIND_TO_ACTION[MotionCommandType.SET_VELOCITY] = "tracking"
 
 # Safety's own reason codes, for problems Motion's list doesn't name.
 GEOFENCE_BREACH = "geofence_breach"
@@ -93,14 +88,12 @@ def _safety_command(
     Motion rejects a HOVER that still carries a velocity, so leaving it in
     would make Safety's own safe order fail.
     """
-    # Orders only have a velocity field once Motion PR #93 is merged.
-    no_velocity = {"velocity": None} if hasattr(original, "velocity") else {}
     return replace(
         original,
-        **no_velocity,
         command_id=f"{original.command_id}-safety",
         kind=kind,
         target=None,
+        velocity=None,
         issued_ns=now_ns,
         expires_ns=None if kind in LIFECYCLE_KINDS else now_ns + _validity_ns(),
         source="safety",
@@ -159,6 +152,31 @@ def _speed_caps_ok(command: Command) -> bool:
     if horizontal is not None and horizontal > config.MAX_HORIZONTAL_SPEED_MPS:
         return False
     if vertical is not None and vertical > config.MAX_VERTICAL_SPEED_MPS:
+        return False
+    return True
+
+
+def _velocity_ok(command: Command) -> bool:
+    """Is a "fly this way at this speed" order within our speed limits?
+
+    Same rule as Motion: sideways speed, up/down speed and spin rate must
+    each be within the limit, or within the order's own lower cap if it set
+    one. Too fast is rejected, never slowed down. Orders without a velocity
+    pass, since there is nothing to check (validate() catches a velocity
+    order that forgot its velocity).
+    """
+    v = command.velocity
+    if v is None or not v.is_finite():
+        return True  # missing or broken numbers are validate()'s job
+    max_h = config.MAX_HORIZONTAL_SPEED_MPS
+    if command.max_horizontal_speed_mps is not None:
+        max_h = min(max_h, command.max_horizontal_speed_mps)
+    max_v = config.MAX_VERTICAL_SPEED_MPS
+    if command.max_vertical_speed_mps is not None:
+        max_v = min(max_v, command.max_vertical_speed_mps)
+    if v.horizontal_speed_mps > max_h or abs(v.vz) > max_v:
+        return False
+    if v.yaw_rate_deg_s is not None and abs(v.yaw_rate_deg_s) > config.MAX_YAW_RATE_DPS:
         return False
     return True
 
@@ -251,6 +269,12 @@ def check_command(
     # 6. Are the speed caps sane?
     if not _speed_caps_ok(command):
         problems.append(SPEED_LIMIT)
+
+    # 7. If it's a "fly this way" order, is the speed itself within limits?
+    #    Motion would refuse it anyway, but then Safety's safe replacement
+    #    never happens and the drone just stops getting orders.
+    if not _velocity_ok(command):
+        problems.append(Reason.VELOCITY_OUTSIDE_LIMITS)
 
     if problems:
         return CommandDecision(
